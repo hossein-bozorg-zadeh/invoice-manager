@@ -1,0 +1,676 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>مدیریت فاکتور</title>
+<meta name="description" content="مدیریت فاکتور، دریافتی و هزینه‌ها، چک‌ها و کارمندان — کاملاً داخل مرورگر شما">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f4f6fb; --card:#ffffff; --text:#1c2333; --muted:#69718a;
+  --border:#e4e8f2; --accent:#3b6ef5; --accent-soft:#eaf0ff;
+  --green:#189a68; --green-soft:#e4f6ee; --red:#d64545; --red-soft:#fdeaea;
+  --amber:#b97d10; --amber-soft:#fcf2df; --shadow:0 6px 20px rgba(28,35,51,.07);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.7 Vazirmatn,Tahoma,sans-serif;-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;font-weight:700}
+button{font:inherit;cursor:pointer}
+input,select,textarea{font:inherit;width:100%;padding:9px 12px;border:1px solid var(--border);
+  border-radius:10px;background:#fff;color:var(--text);outline:none;transition:border .15s}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+label{display:block;font-size:13px;color:var(--muted);margin:0 0 4px}
+.wrap{max-width:980px;margin:0 auto;padding:16px}
+a{color:var(--accent);text-decoration:none}
+
+/* header */
+header{background:var(--card);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:20}
+.hbar{max-width:980px;margin:0 auto;padding:12px 16px;display:flex;
+  align-items:center;gap:12px;flex-wrap:wrap}
+.logo{display:flex;align-items:center;gap:10px;font-weight:800;font-size:17px}
+.logo .ic{width:34px;height:34px;border-radius:10px;background:var(--accent);
+  color:#fff;display:grid;place-items:center;font-size:16px}
+nav{display:flex;gap:6px;flex-wrap:wrap;margin-inline-start:auto}
+nav button{border:none;background:transparent;color:var(--muted);
+  padding:7px 13px;border-radius:9px;font-weight:500;font-size:14px}
+nav button:hover{background:var(--accent-soft);color:var(--accent)}
+nav button.active{background:var(--accent);color:#fff}
+
+/* cards + layout */
+.card{background:var(--card);border:1px solid var(--border);border-radius:16px;
+  padding:18px;box-shadow:var(--shadow);margin-bottom:16px}
+.card h2{font-size:16px;margin-bottom:12px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.row>*{flex:1;min-width:130px}
+.row>.fit{flex:0 0 auto;min-width:0}
+@media(max-width:700px){.grid2,.grid3,.grid4{grid-template-columns:1fr 1fr}}
+@media(max-width:480px){.grid2,.grid3,.grid4{grid-template-columns:1fr}}
+
+.stat{border-radius:16px;padding:16px;border:1px solid var(--border)}
+.stat .t{font-size:13px;color:var(--muted)}
+.stat .v{font-size:22px;font-weight:800;margin-top:4px}
+.stat.income{background:var(--green-soft);border-color:transparent}
+.stat.income .v{color:var(--green)}
+.stat.expense{background:var(--red-soft);border-color:transparent}
+.stat.expense .v{color:var(--red)}
+.stat.balance{background:var(--accent-soft);border-color:transparent}
+.stat.balance .v{color:var(--accent)}
+
+/* tables */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th{color:var(--muted);font-weight:500;font-size:12.5px;text-align:right;
+  padding:8px 10px;border-bottom:1px solid var(--border)}
+td{padding:10px;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.tblwrap{overflow-x:auto}
+.num{font-weight:700;white-space:nowrap}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600}
+.b-green{background:var(--green-soft);color:var(--green)}
+.b-red{background:var(--red-soft);color:var(--red)}
+.b-amber{background:var(--amber-soft);color:var(--amber)}
+.b-blue{background:var(--accent-soft);color:var(--accent)}
+.b-gray{background:#eef0f6;color:var(--muted)}
+.mono{font-family:monospace;direction:ltr;display:inline-block}
+
+/* buttons */
+.btn{border:none;border-radius:10px;padding:9px 18px;font-weight:600;background:var(--accent);color:#fff}
+.btn:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--border)}
+.btn.ghost:hover{color:var(--accent);border-color:var(--accent)}
+.btn.green{background:var(--green)}
+.btn.red{background:var(--red)}
+.btn.sm{padding:5px 12px;font-size:13px;border-radius:8px}
+.btn.icon{background:transparent;color:var(--muted);border:1px solid var(--border);padding:5px 10px}
+.btn.icon:hover{color:var(--red);border-color:var(--red)}
+
+/* misc */
+.empty{text-align:center;color:var(--muted);padding:28px 10px}
+.toast{position:fixed;bottom:20px;right:50%;transform:translateX(50%);
+  background:var(--text);color:#fff;padding:10px 22px;border-radius:12px;
+  font-size:14px;opacity:0;pointer-events:none;transition:opacity .25s;z-index:99}
+.toast.show{opacity:1}
+.hint{font-size:12.5px;color:var(--muted)}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.backlink{display:inline-block;margin-bottom:10px;font-size:13.5px}
+
+/* invoice share page */
+.inv{max-width:720px;margin:0 auto}
+.inv-head{display:flex;justify-content:space-between;align-items:flex-start;
+  border-bottom:2px dashed var(--border);padding-bottom:14px;margin-bottom:14px;gap:10px;flex-wrap:wrap}
+.pay-line{display:flex;gap:10px;align-items:center;background:#f8f9fd;
+  border:1px solid var(--border);border-radius:12px;padding:10px 14px;margin:8px 0}
+.pay-line .num{font-size:15px}
+@media print{
+  header,.noprint,.toast{display:none!important}
+  body{background:#fff}
+  .card{box-shadow:none;border:none;padding:0}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hbar">
+    <div class="logo"><span class="ic">🧾</span><span id="app-title">مدیریت فاکتور</span></div>
+    <nav id="nav"></nav>
+  </div>
+</header>
+
+<div class="wrap" id="view"></div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+/* ============================================================
+   مدیریت فاکتور — a fully client-side invoice & finance manager.
+   Persian / RTL. All data lives in localStorage; nothing leaves
+   the browser. Shared invoices are encoded into the URL itself.
+   ============================================================ */
+
+var STORE_KEY = "invoice_manager_v1";
+var $ = function (s) { return document.querySelector(s); };
+
+/* ---------- storage ---------- */
+function defaultData() {
+  return {
+    profile: {
+      name: "", sheba: "", card: "", phone: "",
+      payNote: "لطفاً پس از واریز، رسید پرداختی را به شماره {phone} ارسال نمایید."
+    },
+    people: [],   // {id, name, role: "employer"|"employee", phone}
+    entries: [],  // {id, type:"income"|"expense", title, amount, date, personId, tracking}
+    cheques: [],  // {id, number, amount, dueDate, personId}
+    invoices: []  // {id, tracking, personId, date, items:[{title, amount}], paid}
+  };
+}
+function load() {
+  try {
+    var raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return defaultData();
+    var d = JSON.parse(raw);
+    var base = defaultData();
+    for (var k in base) if (d[k] === undefined) d[k] = base[k];
+    return d;
+  } catch (e) { return defaultData(); }
+}
+function save() { localStorage.setItem(STORE_KEY, JSON.stringify(db)); }
+var db = load();
+
+/* ---------- helpers ---------- */
+function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 7); }
+function tracking() {
+  var s = "";
+  for (var i = 0; i < 8; i++) s += Math.floor(Math.random() * 10);
+  return s;
+}
+function money(n) { return Number(n || 0).toLocaleString("fa-IR"); }
+function today() { return new Date().toISOString().slice(0, 10); }
+function faDate(iso) {
+  if (!iso) return "—";
+  try { return new Date(iso).toLocaleDateString("fa-IR"); } catch (e) { return iso; }
+}
+function daysTo(iso) {
+  var d = Math.ceil((new Date(iso) - new Date(today())) / 86400000);
+  return isNaN(d) ? null : d;
+}
+function personName(id) {
+  for (var i = 0; i < db.people.length; i++) if (db.people[i].id === id) return db.people[i].name;
+  return "—";
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+function toast(msg) {
+  var t = $("#toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(function () { t.classList.remove("show"); }, 2200);
+}
+function personOptions(sel) {
+  return db.people.map(function (p) {
+    return '<option value="' + p.id + '"' + (p.id === sel ? " selected" : "") + ">" +
+      esc(p.name) + " (" + (p.role === "employer" ? "کارفرما" : "کارمند") + ")</option>";
+  }).join("");
+}
+
+/* ---------- routing ---------- */
+var ROUTES = [
+  ["dashboard", "داشبورد"],
+  ["entries", "آیتم‌ها"],
+  ["people", "کارمندان و کارفرما"],
+  ["cheques", "چک‌ها"],
+  ["invoice", "فاکتور"],
+  ["settings", "تنظیمات"]
+];
+function route() {
+  var h = location.hash.replace(/^#\/?/, "");
+  return h || "dashboard";
+}
+function go(r) { location.hash = "#/" + r; }
+
+function renderNav(active) {
+  $("#nav").innerHTML = ROUTES.map(function (r) {
+    return '<button data-r="' + r[0] + '"' + (r[0] === active ? ' class="active"' : "") + ">" + r[1] + "</button>";
+  }).join("");
+  $("#nav").querySelectorAll("button").forEach(function (b) {
+    b.onclick = function () { go(b.dataset.r); };
+  });
+}
+
+function render() {
+  var r = route();
+  if (r.indexOf("share/") === 0) { renderShare(decodeURIComponent(r.slice(6))); return; }
+  var fn = { dashboard: viewDashboard, entries: viewEntries, people: viewPeople,
+    cheques: viewCheques, invoice: viewInvoice, settings: viewSettings }[r] || viewDashboard;
+  renderNav(r in { dashboard:1, entries:1, people:1, cheques:1, invoice:1, settings:1 } ? r : "dashboard");
+  fn();
+  window.scrollTo(0, 0);
+}
+window.addEventListener("hashchange", render);
+
+/* ---------- totals ---------- */
+function totals() {
+  var inc = 0, exp = 0;
+  db.entries.forEach(function (e) {
+    if (e.type === "income") inc += Number(e.amount || 0);
+    else exp += Number(e.amount || 0);
+  });
+  return { income: inc, expense: exp, balance: inc - exp };
+}
+
+/* ================= dashboard ================= */
+function viewDashboard() {
+  var t = totals();
+  var recent = db.entries.slice().sort(function (a, b) { return b.date < a.date ? -1 : 1; }).slice(0, 6);
+  var soonCheques = db.cheques.filter(function (c) { var d = daysTo(c.dueDate); return d !== null && d <= 14; })
+    .sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, 5);
+
+  $("#view").innerHTML =
+    '<div class="grid3">' +
+      '<div class="stat income"><div class="t">جمع دریافتی</div><div class="v">' + money(t.income) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat expense"><div class="t">جمع هزینه</div><div class="v">' + money(t.expense) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat balance"><div class="t">مانده حساب</div><div class="v">' + money(t.balance) + ' <span style="font-size:12px">ریال</span></div></div>' +
+    '</div>' +
+    '<div class="grid2" style="margin-top:16px;align-items:start">' +
+      '<div class="card"><h2>آخرین آیتم‌ها</h2>' +
+        (recent.length ? '<div class="tblwrap"><table><tbody>' + recent.map(function (e) {
+          return "<tr><td>" + (e.type === "income"
+            ? '<span class="badge b-green">دریافتی</span>'
+            : '<span class="badge b-red">هزینه</span>') +
+            "</td><td>" + esc(e.title) + "</td><td class='num'>" + money(e.amount) + "</td><td class='hint'>" + faDate(e.date) + "</td></tr>";
+        }).join("") + "</tbody></table></div>"
+        : '<div class="empty">هنوز آیتمی ثبت نشده است.</div>') +
+      "</div>" +
+      '<div class="card"><h2>چک‌های نزدیک</h2>' +
+        (soonCheques.length ? '<div class="tblwrap"><table><tbody>' + soonCheques.map(function (c) {
+          var d = daysTo(c.dueDate);
+          var badge = d < 0 ? '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>'
+            : d === 0 ? '<span class="badge b-amber">امروز</span>'
+            : '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
+          return "<tr><td>چک " + esc(c.number) + "</td><td class='num'>" + money(c.amount) + "</td><td>" + badge + "</td></tr>";
+        }).join("") + "</tbody></table></div>"
+        : '<div class="empty">چکی در ۱۴ روز آینده نیست.</div>') +
+      "</div>" +
+    "</div>";
+}
+
+/* ================= entries ================= */
+function viewEntries() {
+  var t = totals();
+  $("#view").innerHTML =
+    '<div class="card"><h2>افزودن آیتم جدید</h2>' +
+      '<div class="row">' +
+        '<div><label>نوع</label><select id="e-type"><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
+        '<div><label>نام آیتم</label><input id="e-title" placeholder="مثلاً حقوق شهریور"></div>' +
+        '<div><label>مبلغ (ریال)</label><input id="e-amount" type="number" min="0" inputmode="numeric" placeholder="۰-۹"></div>' +
+        '<div><label>تاریخ</label><input id="e-date" type="date" value="' + today() + '"></div>' +
+        '<div><label>شخص (اختیاری)</label><select id="e-person"><option value="">—</option>' + personOptions() + "</select></div>" +
+        '<div class="fit"><button class="btn" id="e-add">افزودن</button></div>' +
+      "</div>" +
+    "</div>" +
+    '<div class="card"><h2>همه آیتم‌ها <span class="hint">(' + money(db.entries.length) + ' مورد)</span></h2>' +
+      '<div class="actions noprint" style="margin:0 0 12px">' +
+        '<button class="btn ghost sm" id="csv-all">دانلود اکسل (CSV)</button>' +
+      "</div>" +
+      '<div id="entries-list"></div>' +
+    "</div>";
+
+  function list() {
+    var rows = db.entries.slice().sort(function (a, b) { return b.date < a.date ? -1 : 1; });
+    $("#entries-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>نوع</th><th>نام آیتم</th><th>مبلغ (ریال)</th><th>تاریخ</th><th>شخص</th><th>کد پیگیری</th><th></th>" +
+      "</tr></thead><tbody>" + rows.map(function (e) {
+        return "<tr><td>" + (e.type === "income"
+            ? '<span class="badge b-green">دریافتی</span>'
+            : '<span class="badge b-red">هزینه</span>') +
+          "</td><td>" + esc(e.title) + "</td><td class='num'>" + money(e.amount) +
+          "</td><td>" + faDate(e.date) + "</td><td>" + esc(personName(e.personId)) +
+          "</td><td><span class='mono hint'>" + e.tracking + "</span></td>" +
+          "<td><button class='btn icon sm' data-del='" + e.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<div class="empty">چیزی ثبت نشده است.</div>';
+
+    $("#entries-list").querySelectorAll("[data-del]").forEach(function (b) {
+      b.onclick = function () {
+        var e = db.entries.find(function (x) { return x.id === b.dataset.del; });
+        if (!confirm("آیا از حذف آیتم «" + (e ? e.title : "") + "» مطمئن هستید؟")) return;
+        db.entries = db.entries.filter(function (x) { return x.id !== b.dataset.del; });
+        save(); toast("آیتم حذف شد."); viewEntries();
+      };
+    });
+  }
+  list();
+
+  $("#e-add").onclick = function () {
+    var title = $("#e-title").value.trim();
+    var amount = Number($("#e-amount").value);
+    if (!title || !(amount > 0)) { toast("لطفاً نام و مبلغ معتبر وارد کنید."); return; }
+    db.entries.push({
+      id: uid(), type: $("#e-type").value, title: title, amount: amount,
+      date: $("#e-date").value || today(), personId: $("#e-person").value || null,
+      tracking: tracking()
+    });
+    save(); toast("آیتم اضافه شد."); viewEntries();
+  };
+  $("#csv-all").onclick = function () { exportCsv(); };
+}
+
+function exportCsv() {
+  var rows = [["نوع", "نام آیتم", "مبلغ (ریال)", "تاریخ", "شخص", "کد پیگیری"]];
+  db.entries.forEach(function (e) {
+    rows.push([e.type === "income" ? "دریافتی" : "هزینه", e.title, e.amount, e.date, personName(e.personId), e.tracking]);
+  });
+  var csv = "\uFEFF" + rows.map(function (r) {
+    return r.map(function (c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(",");
+  }).join("\r\n");
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  a.download = "items.csv";
+  a.click();
+  toast("فایل CSV دانلود شد.");
+}
+
+/* ================= people ================= */
+function viewPeople() {
+  $("#view").innerHTML =
+    '<div class="card"><h2>افزودن کارمند / کارفرما</h2>' +
+      '<div class="row">' +
+        '<div><label>نام</label><input id="p-name" placeholder="نام و نام خانوادگی"></div>' +
+        '<div><label>نقش</label><select id="p-role"><option value="employer">کارفرما</option><option value="employee">کارمند</option></select></div>' +
+        '<div><label>شماره تماس (اختیاری)</label><input id="p-phone" inputmode="tel" placeholder="09…"></div>' +
+        '<div class="fit"><button class="btn" id="p-add">افزودن</button></div>' +
+      "</div>" +
+    "</div>" +
+    '<div class="card"><h2>کارکنان شرکت و کارفرماها</h2><div id="people-list"></div></div>';
+
+  function list() {
+    $("#people-list").innerHTML = db.people.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>نام</th><th>نقش</th><th>شماره تماس</th><th></th></tr></thead><tbody>" +
+      db.people.map(function (p) {
+        return "<tr><td>" + esc(p.name) + "</td><td>" +
+          (p.role === "employer" ? '<span class="badge b-blue">کارفرما</span>' : '<span class="badge b-gray">کارمند</span>') +
+          "</td><td class='mono'>" + esc(p.phone || "—") + "</td>" +
+          "<td><button class='btn icon sm' data-del='" + p.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<div class="empty">هنوز کسی اضافه نشده است.</div>';
+
+    $("#people-list").querySelectorAll("[data-del]").forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm("آیا از حذف این شخص مطمئن هستید؟")) return;
+        db.people = db.people.filter(function (x) { return x.id !== b.dataset.del; });
+        save(); toast("حذف شد."); viewPeople();
+      };
+    });
+  }
+  list();
+
+  $("#p-add").onclick = function () {
+    var name = $("#p-name").value.trim();
+    if (!name) { toast("لطفاً نام وارد کنید."); return; }
+    db.people.push({ id: uid(), name: name, role: $("#p-role").value, phone: $("#p-phone").value.trim() });
+    save(); toast("اضافه شد."); viewPeople();
+  };
+}
+
+/* ================= cheques ================= */
+function viewCheques() {
+  $("#view").innerHTML =
+    '<div class="card"><h2>افزودن چک جدید</h2>' +
+      '<div class="row">' +
+        '<div><label>شماره چک</label><input id="c-number" placeholder="مثلاً ۱۲۳۴۵۶"></div>' +
+        '<div><label>مبلغ (ریال)</label><input id="c-amount" type="number" min="0" inputmode="numeric"></div>' +
+        '<div><label>تاریخ سررسید</label><input id="c-due" type="date"></div>' +
+        '<div><label>شخص (اختیاری)</label><select id="c-person"><option value="">—</option>' + personOptions() + "</select></div>" +
+        '<div class="fit"><button class="btn" id="c-add">ثبت چک</button></div>' +
+      "</div>" +
+    "</div>" +
+    '<div class="card"><h2>چک‌ها</h2><div id="cheque-list"></div></div>';
+
+  function list() {
+    var rows = db.cheques.slice().sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+    $("#cheque-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>شماره چک</th><th>مبلغ (ریال)</th><th>سررسید</th><th>وضعیت</th><th>شخص</th><th></th>" +
+      "</tr></thead><tbody>" + rows.map(function (c) {
+        var d = daysTo(c.dueDate);
+        var badge = d === null ? '<span class="badge b-gray">—</span>'
+          : d < 0 ? '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>'
+          : d === 0 ? '<span class="badge b-amber">امروز</span>'
+          : '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
+        return "<tr><td>" + esc(c.number) + "</td><td class='num'>" + money(c.amount) +
+          "</td><td>" + faDate(c.dueDate) + "</td><td>" + badge + "</td><td>" + esc(personName(c.personId)) +
+          "</td><td><button class='btn icon sm' data-del='" + c.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<div class="empty">چکی ثبت نشده است.</div>';
+
+    $("#cheque-list").querySelectorAll("[data-del]").forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm("آیا از حذف این چک مطمئن هستید؟")) return;
+        db.cheques = db.cheques.filter(function (x) { return x.id !== b.dataset.del; });
+        save(); toast("چک حذف شد."); viewCheques();
+      };
+    });
+  }
+  list();
+
+  $("#c-add").onclick = function () {
+    var number = $("#c-number").value.trim();
+    var amount = Number($("#c-amount").value);
+    var due = $("#c-due").value;
+    if (!number || !(amount > 0) || !due) { toast("شماره چک، مبلغ و سررسید را کامل وارد کنید."); return; }
+    db.cheques.push({ id: uid(), number: number, amount: amount, dueDate: due, personId: $("#c-person").value || null });
+    save(); toast("چک ثبت شد."); viewCheques();
+  };
+}
+
+/* ================= invoices ================= */
+var draftItems = [];
+function viewInvoice() {
+  draftItems = draftItems.length ? draftItems : [];
+  $("#view").innerHTML =
+    '<div class="card"><h2>ساخت فاکتور جدید</h2>' +
+      '<div class="row">' +
+        '<div><label>برای چه کسی</label><select id="i-person">' + personOptions() + "</select></div>" +
+        '<div><label>تاریخ</label><input id="i-date" type="date" value="' + today() + '"></div>' +
+      "</div>" +
+      '<div class="row" style="margin-top:12px">' +
+        '<div><label>عنوان آیتم</label><input id="i-title" placeholder="نام آیتم"></div>' +
+        '<div><label>مبلغ (ریال)</label><input id="i-amount" type="number" min="0" inputmode="numeric"></div>' +
+        '<div class="fit"><button class="btn ghost" id="i-additem">افزودن آیتم</button></div>' +
+      "</div>" +
+      '<div id="draft-list" style="margin-top:10px"></div>' +
+      '<div class="actions">' +
+        '<button class="btn green" id="i-save">ذخیره فاکتور و ساخت کد پیگیری</button>' +
+      "</div>" +
+    "</div>" +
+    '<div class="card"><h2>فاکتورهای صادرشده</h2><div id="inv-list"></div></div>';
+
+  renderDraft();
+
+  $("#i-additem").onclick = function () {
+    var t = $("#i-title").value.trim();
+    var a = Number($("#i-amount").value);
+    if (!t || !(a > 0)) { toast("لطفاً نام و مبلغ معتبر وارد کنید."); return; }
+    draftItems.push({ title: t, amount: a });
+    $("#i-title").value = ""; $("#i-amount").value = "";
+    renderDraft();
+  };
+  $("#i-save").onclick = function () {
+    if (!draftItems.length) { toast("حداقل یک آیتم به فاکتور اضافه کنید."); return; }
+    var inv = {
+      id: uid(), tracking: tracking(), personId: $("#i-person").value || null,
+      date: $("#i-date").value || today(), items: draftItems.slice(), paid: false
+    };
+    db.invoices.unshift(inv);
+    draftItems = [];
+    save();
+    toast("فاکتور ذخیره شد. کد پیگیری: " + inv.tracking);
+    viewInvoice();
+  };
+
+  function renderDraft() {
+    var sum = draftItems.reduce(function (s, i) { return s + i.amount; }, 0);
+    $("#draft-list").innerHTML = draftItems.length ? '<div class="tblwrap"><table><tbody>' +
+      draftItems.map(function (i, idx) {
+        return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) +
+          "</td><td><button class='btn icon sm' data-rm='" + idx + "'>حذف</button></td></tr>";
+      }).join("") +
+      "<tr><td><b>جمع</b></td><td class='num'>" + money(sum) + "</td><td></td></tr></tbody></table></div>"
+      : '<div class="hint">هنوز آیتمی به این فاکتور اضافه نشده است.</div>';
+    $("#draft-list").querySelectorAll("[data-rm]").forEach(function (b) {
+      b.onclick = function () { draftItems.splice(Number(b.dataset.rm), 1); renderDraft(); };
+    });
+  }
+
+  var list = $("#inv-list");
+  list.innerHTML = db.invoices.length ? '<div class="tblwrap"><table><thead><tr>' +
+    "<th>کد پیگیری</th><th>شخص</th><th>تاریخ</th><th>مبلغ (ریال)</th><th>وضعیت</th><th>عملیات</th>" +
+    "</tr></thead><tbody>" + db.invoices.map(function (v) {
+      var sum = v.items.reduce(function (s, i) { return s + i.amount; }, 0);
+      var url = shareUrl(v);
+      return "<tr><td><span class='mono'>" + v.tracking + "</span></td><td>" + esc(personName(v.personId)) +
+        "</td><td>" + faDate(v.date) + "</td><td class='num'>" + money(sum) + "</td><td>" +
+        (v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') +
+        "</td><td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+        "<button class='btn ghost sm' data-share='" + v.id + "'>کپی لینک پرداخت</button>" +
+        "<button class='btn ghost sm' data-print='" + v.id + "'>چاپ</button>" +
+        "<button class='btn ghost sm' data-paid='" + v.id + "'>" + (v.paid ? "ناتمام" : "پرداخت شد") + "</button>" +
+        "<button class='btn icon sm' data-del='" + v.id + "'>حذف</button></div></td></tr>";
+    }).join("") + "</tbody></table></div>" : '<div class="empty">هنوز فاکتوری صادر نشده است.</div>';
+
+  list.querySelectorAll("[data-share]").forEach(function (b) {
+    b.onclick = function () {
+      var v = db.invoices.find(function (x) { return x.id === b.dataset.share; });
+      var url = shareUrl(v);
+      if (navigator.clipboard) navigator.clipboard.writeText(url).then(function () {
+        toast("لینک پرداخت کپی شد.");
+      }, function () { prompt("لینک پرداخت:", url); });
+      else prompt("لینک پرداخت:", url);
+    };
+  });
+  list.querySelectorAll("[data-print]").forEach(function (b) {
+    b.onclick = function () {
+      var v = db.invoices.find(function (x) { return x.id === b.dataset.print; });
+      renderShare(encodeInvoice(v));
+      setTimeout(function () { window.print(); }, 300);
+    };
+  });
+  list.querySelectorAll("[data-paid]").forEach(function (b) {
+    b.onclick = function () {
+      var v = db.invoices.find(function (x) { return x.id === b.dataset.paid; });
+      v.paid = !v.paid; save(); viewInvoice();
+    };
+  });
+  list.querySelectorAll("[data-del]").forEach(function (b) {
+    b.onclick = function () {
+      if (!confirm("آیا از حذف این فاکتور و تمام آیتم‌های آن مطمئن هستید؟")) return;
+      db.invoices = db.invoices.filter(function (x) { return x.id !== b.dataset.del; });
+      save(); toast("فاکتور حذف شد."); viewInvoice();
+    };
+  });
+}
+
+function encodeInvoice(v) {
+  var payload = {
+    t: v.tracking, d: v.date, p: personName(v.personId), items: v.items
+  };
+  return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+}
+function shareUrl(v) {
+  return location.origin + location.pathname + "#/share/" + encodeURIComponent(encodeInvoice(v));
+}
+function decodeInvoice(code) {
+  try { return JSON.parse(decodeURIComponent(escape(atob(code)))); }
+  catch (e) { return null; }
+}
+
+/* ================= share (customer view) ================= */
+function renderShare(code) {
+  var v = code ? decodeInvoice(code) : null;
+  renderNav("");
+  var sum = v ? v.items.reduce(function (s, i) { return s + Number(i.amount || 0); }, 0) : 0;
+  var pr = db.profile;
+  var note = (pr.payNote || "").replace("{phone}", pr.phone || "…");
+
+  $("#view").innerHTML = !v ?
+    '<div class="card inv"><div class="empty">فاکتوری برای نمایش وجود ندارد.</div></div>' :
+    '<div class="card inv">' +
+      '<a class="backlink noprint" href="#/invoice">→ بازگشت به مدیریت</a>' +
+      '<div class="inv-head">' +
+        '<div><h2>فاکتور</h2><div class="hint">کد پیگیری: <span class="mono">' + esc(v.t) + "</span></div></div>" +
+        '<div style="text-align:left"><div class="hint">تاریخ</div><b>' + faDate(v.d) + "</b></div>" +
+      "</div>" +
+      (v.p ? '<div class="hint">به نام <b>' + esc(v.p) + "</b></div>" : "") +
+      '<div class="tblwrap"><table><thead><tr><th>شرح</th><th>مبلغ (ریال)</th></tr></thead><tbody>' +
+        v.items.map(function (i) {
+          return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) + "</td></tr>";
+        }).join("") +
+        "<tr><td><b>جمع کل</b></td><td class='num' style='font-size:17px'>" + money(sum) + "</td></tr>" +
+      "</tbody></table></div>" +
+      '<h2 style="margin-top:20px;font-size:15px">راهنمای پرداخت</h2>' +
+      '<p class="hint">مشتری گرامی، جهت تسویه حساب لطفاً مبلغ فاکتور را به یکی از روش‌های زیر پرداخت نمایید:</p>' +
+      (pr.sheba ? '<div class="pay-line">🏦 <span>شماره شبا:</span> <span class="num">IR' + esc(pr.sheba) + "</span></div>" : "") +
+      (pr.card ? '<div class="pay-line">💳 <span>شماره کارت:</span> <span class="num">' + esc(pr.card) + "</span></div>" : "") +
+      (!pr.sheba && !pr.card ? '<div class="empty">روش پرداختی ثبت نشده است — از تنظیمات شبا/کارت را وارد کنید.</div>' : "") +
+      (pr.name ? '<div class="hint" style="margin-top:8px">به نام ' + esc(pr.name) + "</div>" : "") +
+      '<p class="hint" style="margin-top:10px">' + esc(note) + "</p>" +
+      '<div class="actions noprint"><button class="btn ghost" onclick="window.print()">چاپ فاکتور</button></div>' +
+    "</div>";
+}
+
+/* ================= settings ================= */
+function viewSettings() {
+  var p = db.profile;
+  $("#view").innerHTML =
+    '<div class="card"><h2>مدیریت پروفایل</h2>' +
+      '<p class="hint">این اطلاعات در صفحه پرداخت فاکتور (لینک اشتراک‌گذاری‌شده) نمایش داده می‌شود.</p>' +
+      '<div class="grid2">' +
+        '<div><label>نام صاحب حساب</label><input id="s-name" value="' + esc(p.name) + '"></div>' +
+        '<div><label>شماره تماس</label><input id="s-phone" inputmode="tel" value="' + esc(p.phone) + '"></div>' +
+        '<div><label>شماره شبا (بدون IR)</label><input id="s-sheba" inputmode="numeric" value="' + esc(p.sheba) + '" placeholder="019000000000000000000001"></div>' +
+        '<div><label>شماره کارت</label><input id="s-card" inputmode="numeric" value="' + esc(p.card) + '" placeholder="6037…"></div>' +
+      "</div>" +
+      '<div style="margin-top:12px"><label>پیام راهنمای پرداخت (از {phone} برای شماره تماس استفاده کنید)</label>' +
+        '<textarea id="s-note" rows="2">' + esc(p.payNote) + "</textarea></div>" +
+      '<div class="actions"><button class="btn" id="s-save">ذخیره</button></div>' +
+    "</div>" +
+    '<div class="card"><h2>پشتیبان‌گیری از داده‌ها</h2>' +
+      '<p class="hint">تمام داده‌ها فقط داخل همین مرورگر ذخیره می‌شوند. برای انتقال به دستگاه دیگر از خروجی/ورودی JSON استفاده کنید.</p>' +
+      '<div class="actions">' +
+        '<button class="btn ghost" id="s-export">دانلود خروجی (JSON)</button>' +
+        '<button class="btn ghost" id="s-import">بازیابی از فایل</button>' +
+        '<input type="file" id="s-file" accept=".json" style="display:none">' +
+      "</div>" +
+    "</div>" +
+    '<div class="card"><h2 style="color:var(--red)">پاک کردن همه داده‌ها</h2>' +
+      '<div class="actions"><button class="btn red" id="s-reset">پاک کردن کامل</button></div>' +
+    "</div>";
+
+  $("#s-save").onclick = function () {
+    db.profile = {
+      name: $("#s-name").value.trim(), phone: $("#s-phone").value.trim(),
+      sheba: $("#s-sheba").value.trim(), card: $("#s-card").value.trim(),
+      payNote: $("#s-note").value.trim()
+    };
+    save(); toast("ذخیره شد.");
+  };
+  $("#s-export").onclick = function () {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(db, null, 2)], { type: "application/json" }));
+    a.download = "invoice-manager-backup.json";
+    a.click();
+  };
+  $("#s-import").onclick = function () { $("#s-file").click(); };
+  $("#s-file").onchange = function (ev) {
+    var f = ev.target.files[0];
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      try {
+        var d = JSON.parse(r.result);
+        if (typeof d !== "object" || d === null) throw 0;
+        var base = defaultData();
+        for (var k in base) if (d[k] === undefined) d[k] = base[k];
+        db = d; save(); toast("بازیابی انجام شد."); viewSettings();
+      } catch (e) { toast("فایل معتبر نیست."); }
+    };
+    r.readAsText(f);
+  };
+  $("#s-reset").onclick = function () {
+    if (!confirm("آیا از پاک کردن تمام داده‌ها (آیتم‌ها، چک‌ها، فاکتورها و اشخاص) مطمئن هستید؟ این کار قابل بازگشت نیست.")) return;
+    if (!confirm("مطمئن هستید؟")) return;
+    db = defaultData(); save(); toast("تمام داده‌ها پاک شد."); go("dashboard");
+  };
+}
+
+/* ---------- boot ---------- */
+if (!location.hash) location.hash = "#/dashboard";
+render();
+</script>
+</body>
+</html>
