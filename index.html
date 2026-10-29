@@ -132,15 +132,23 @@ td.num,th.num{text-align:left;direction:ltr}
 .jpicker .jp-foot button:hover{background:var(--accent-soft)}
 
 /* invoice share page */
-.inv{max-width:720px;margin:0 auto}
+.inv{max-width:720px;margin:0 auto;padding:0!important;border:none!important;box-shadow:none!important;background:transparent!important}
+.inv-inner{background:var(--card);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);overflow:hidden}
+.inv-top{background:linear-gradient(135deg,var(--accent),#8a5cf6);color:#fff;padding:20px 22px;
+  display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;align-items:center}
+.inv-top .t1{font-size:18px;font-weight:800}
+.inv-top .t2{font-size:13px;opacity:.85}
+.paid-banner{background:var(--green-soft);color:var(--green);border-radius:12px;
+  padding:12px 16px;font-weight:700;margin:14px 0}
+.pay-line .fld{flex:1;min-width:0}
+.inv-body{padding:20px 22px}
 .inv-head{display:flex;justify-content:space-between;align-items:flex-start;
   border-bottom:2px dashed var(--border);padding-bottom:14px;margin-bottom:14px;gap:10px;flex-wrap:wrap}
-.pay-line{display:flex;gap:10px;align-items:center;background:var(--bg);
-  border:1px solid var(--border);border-radius:12px;padding:10px 14px;margin:8px 0}
 @media print{
   header,.noprint,.toast{display:none!important}
   body{background:#fff}
   .card{box-shadow:none;border:none;padding:0}
+  .inv-top{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
 </style>
 </head>
@@ -172,7 +180,7 @@ var $ = function (s) { return document.querySelector(s); };
 function defaultData() {
   return {
     profile: {
-      name: "", sheba: "", card: "", phone: "",
+      name: "", bank: "", sheba: "", card: "", phone: "",
       payNote: "لطفاً پس از واریز، رسید پرداختی را به شماره {phone} ارسال نمایید."
     },
     people: [],   // {id, name, role: "employer"|"employee", phone}
@@ -430,6 +438,13 @@ function setJalaliFromIso(input, iso) {
   input.value = isoToJalaliStr(iso);
   input.dataset.iso = iso;
   input.style.borderColor = "";
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+}
+function copyText(t) {
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(t).then(function () { toast("کپی شد."); },
+      function () { prompt("مقدار:", t); });
+  } else prompt("مقدار:", t);
 }
 function bindJalaliInputs() {
   document.querySelectorAll(".jdate").forEach(function (el) {
@@ -826,6 +841,14 @@ function viewCheques() {
       '<div style="margin-top:10px"><label>توضیحات</label><input id="c-notes" placeholder="اختیاری — مثلاً بابت قرارداد شماره…"></div>' +
     "</div>" +
     '<div class="card"><h2>چک‌ها</h2>' +
+      '<div class="row" style="margin-bottom:10px">' +
+        '<div><label>سررسید از</label><input id="cf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
+        '<div><label>تا</label><input id="cf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۳۱"></div>' +
+        '<div class="fit" style="display:flex;gap:6px">' +
+          '<button class="btn ghost sm" id="cf-month">این ماه</button>' +
+          '<button class="btn ghost sm" id="cf-clear-range">پاک کردن</button>' +
+        "</div>" +
+      "</div>" +
       '<div class="row" style="margin-bottom:12px">' +
         '<div><label>جستجو</label><input id="cf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
         '<div><label>وضعیت</label><select id="cf-status"><option value="">همه</option><option value="open">در جریان</option><option value="cashed">واصل</option><option value="bounced">برگشتی</option></select></div>' +
@@ -847,10 +870,14 @@ function viewCheques() {
     var dir = $("#cf-dir").value;
     var person = $("#cf-person").value;
     var sort = $("#cf-sort").value;
+    var from = readIso("#cf-from");
+    var to = readIso("#cf-to");
     var rows = db.cheques.filter(function (c) {
       if (st && c.status !== st) return false;
       if (dir && c.direction !== dir) return false;
       if (person && c.personId !== person) return false;
+      if (from && (c.dueDate || "") < from) return false;
+      if (to && (c.dueDate || "") > to) return false;
       if (q && ((c.number || "") + " " + (c.bank || "") + " " + (c.sayad || "") + " " + (c.notes || "")).indexOf(q) < 0) return false;
       return true;
     });
@@ -999,9 +1026,19 @@ function viewCheques() {
       save(); toast("چک ثبت شد."); viewCheques();
     }
   };
-  ["#cf-q", "#cf-status", "#cf-dir", "#cf-person", "#cf-sort"].forEach(function (s) {
+  ["#cf-q", "#cf-status", "#cf-dir", "#cf-person", "#cf-sort", "#cf-from", "#cf-to"].forEach(function (s) {
     $(s).addEventListener("input", list);
   });
+  $("#cf-month").onclick = function () {
+    var p = today().split("-");
+    var j = g2j(+p[0], +p[1], +p[2]);
+    var a = j2g(j[0], j[1], 1), b = j2g(j[0], j[1], jMonthLen(j[0], j[1]));
+    setJalaliFromIso($("#cf-from"), isoOf(new Date(a[0], a[1] - 1, a[2])));
+    setJalaliFromIso($("#cf-to"), isoOf(new Date(b[0], b[1] - 1, b[2])));
+  };
+  $("#cf-clear-range").onclick = function () {
+    setJalali("#cf-from", ""); setJalali("#cf-to", ""); list();
+  };
   $("#cf-csv").onclick = function () {
     var rows = [["نوع", "شماره چک", "بانک", "شناسه صیادی", "مبلغ (ریال)", "سررسید", "وضعیت", "شخص", "توضیحات"]];
     filtered().forEach(function (c) {
@@ -1120,7 +1157,6 @@ function viewInvoice() {
       var v = db.invoices.find(function (x) { return x.id === b.dataset.print; });
       renderShare(encodeInvoice(v));
       setTimeout(function () { window.print(); }, 300);
-      go("invoice");
     };
   });
   list.querySelectorAll("[data-paid]").forEach(function (b) {
@@ -1140,8 +1176,16 @@ function viewInvoice() {
 }
 
 function encodeInvoice(v) {
+  /* The customer's browser has no localStorage of the owner — everything the
+     payment page needs travels inside the URL itself. */
+  var pr = {
+    name: db.profile.name || "", bank: db.profile.bank || "",
+    sheba: db.profile.sheba || "", card: db.profile.card || "",
+    phone: db.profile.phone || "", payNote: db.profile.payNote || ""
+  };
   var payload = {
-    t: v.tracking, n: v.number || null, d: v.date, p: personName(v.personId), items: v.items
+    t: v.tracking, n: v.number || null, d: v.date, p: personName(v.personId),
+    items: v.items, pd: v.paid ? 1 : 0, pr: pr
   };
   return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
 }
@@ -1154,38 +1198,58 @@ function decodeInvoice(code) {
 }
 
 /* ================= share (customer view) ================= */
+function payLine(icon, label, value, extra) {
+  return '<div class="pay-line">' + icon +
+    '<div class="fld"><div class="hint">' + esc(label) + '</div>' +
+    '<div class="num" style="font-size:15px">' + esc(value) + '</div>' +
+    (extra ? '<div class="hint">' + esc(extra) + "</div>" : "") + "</div>" +
+    '<button class="btn ghost sm" data-copy="' + esc(value) + '">📋 کپی</button></div>';
+}
 function renderShare(code) {
   var v = code ? decodeInvoice(code) : null;
   renderNav("");
   var sum = v ? v.items.reduce(function (s, i) { return s + Number(i.amount || 0); }, 0) : 0;
-  var pr = db.profile;
-  var note = (pr.payNote || "").replace("{phone}", pr.phone || "…");
+  /* the customer's browser has no stored profile — use the copy embedded in
+     the URL, falling back to the local profile only for owner previews */
+  var pr = (v && v.pr) ? v.pr : db.profile;
+  var note = String(pr.payNote || "").replace("{phone}", pr.phone || "…");
+  var paid = !!(v && (v.pd === 1 || v.pd === true));
 
   $("#view").innerHTML = !v ?
-    '<div class="card inv"><div class="empty">فاکتوری برای نمایش وجود ندارد.</div></div>' :
-    '<div class="card inv">' +
+    '<div class="card inv"><div class="inv-inner"><div class="inv-body"><div class="empty">فاکتوری برای نمایش وجود ندارد.</div></div></div></div>' :
+    '<div class="inv noprint-back">' +
       '<a class="backlink noprint" href="#/invoice">→ بازگشت به مدیریت</a>' +
-      '<div class="inv-head">' +
-        '<div><h2>' + (v.n ? "فاکتور-" + money(v.n) : "فاکتور") + '</h2>' +
-        '<div class="hint">کد پیگیری: <span class="mono">' + esc(v.t) + "</span></div></div>" +
-        '<div style="text-align:left"><div class="hint">تاریخ</div><b>' + faDate(v.d) + "</b></div>" +
+      '<div class="inv-inner">' +
+        '<div class="inv-top">' +
+          '<div><div class="t1">🧾 ' + esc(pr.name || "فاکتور") + "</div>" +
+          '<div class="t2">' + (v.n ? "فاکتور-" + money(v.n) : "صورتحساب") + "</div></div>" +
+          '<div style="text-align:left"><div class="t2">کد پیگیری</div><b class="mono">' + esc(v.t) +
+          '<div class="t2" style="margin-top:2px">' + faDate(v.d) + "</div></b></div>" +
+        "</div>" +
+        '<div class="inv-body">' +
+          (v.p ? '<p style="margin:0 0 12px">صورتحساب برای <b>' + esc(v.p) + "</b></p>" : "") +
+          '<div class="tblwrap"><table><thead><tr><th>شرح</th><th>مبلغ (ریال)</th></tr></thead><tbody>' +
+            v.items.map(function (i) {
+              return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) + "</td></tr>";
+            }).join("") +
+            "<tr><td><b>جمع کل</b></td><td class='num' style='font-size:17px'>" + money(sum) + "</td></tr>" +
+          "</tbody></table></div>" +
+          (paid ? '<div class="paid-banner">✅ این فاکتور تسویه شده است. با تشکر از پرداخت شما.</div>' : "") +
+          '<h2 style="margin-top:18px;font-size:15px">راهنمای پرداخت</h2>' +
+          '<p class="hint">مشتری گرامی، جهت تسویه حساب لطفاً مبلغ فاکتور را به یکی از روش‌های زیر پرداخت نمایید:</p>' +
+          (pr.sheba ? payLine("🏦", "شماره شبا" + (pr.bank ? " — " + pr.bank : ""), "IR" + pr.sheba, pr.name ? "به نام " + pr.name : "") : "") +
+          (pr.card ? payLine("💳", "شماره کارت", pr.card, "") : "") +
+          (!pr.sheba && !pr.card ? '<div class="empty">روش پرداختی ثبت نشده است — از تنظیمات شبا/کارت را وارد کنید.</div>' : "") +
+          '<p class="hint" style="margin-top:10px">' + esc(note) + "</p>" +
+          '<div class="actions noprint"><button class="btn ghost" onclick="window.print()">🖨 چاپ فاکتور</button></div>' +
+          '<p class="hint noprint" style="text-align:center;margin-top:14px;opacity:.7">این فاکتور به‌صورت دیجیتال صادر شده است.</p>' +
+        "</div>" +
       "</div>" +
-      (v.p ? '<div class="hint">به نام <b>' + esc(v.p) + "</b></div>" : "") +
-      '<div class="tblwrap"><table><thead><tr><th>شرح</th><th>مبلغ (ریال)</th></tr></thead><tbody>' +
-        v.items.map(function (i) {
-          return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) + "</td></tr>";
-        }).join("") +
-        "<tr><td><b>جمع کل</b></td><td class='num' style='font-size:17px'>" + money(sum) + "</td></tr>" +
-      "</tbody></table></div>" +
-      '<h2 style="margin-top:20px;font-size:15px">راهنمای پرداخت</h2>' +
-      '<p class="hint">مشتری گرامی، جهت تسویه حساب لطفاً مبلغ فاکتور را به یکی از روش‌های زیر پرداخت نمایید:</p>' +
-      (pr.sheba ? '<div class="pay-line">🏦 <span>شماره شبا:</span> <span class="num">IR' + esc(pr.sheba) + "</span></div>" : "") +
-      (pr.card ? '<div class="pay-line">💳 <span>شماره کارت:</span> <span class="num">' + esc(pr.card) + "</span></div>" : "") +
-      (!pr.sheba && !pr.card ? '<div class="empty">روش پرداختی ثبت نشده است — از تنظیمات شبا/کارت را وارد کنید.</div>' : "") +
-      (pr.name ? '<div class="hint" style="margin-top:8px">به نام ' + esc(pr.name) + "</div>" : "") +
-      '<p class="hint" style="margin-top:10px">' + esc(note) + "</p>" +
-      '<div class="actions noprint"><button class="btn ghost" onclick="window.print()">چاپ فاکتور</button></div>' +
     "</div>";
+
+  $("#view").querySelectorAll("[data-copy]").forEach(function (b) {
+    b.onclick = function () { copyText(b.dataset.copy); };
+  });
 }
 
 /* ================= settings ================= */
@@ -1197,8 +1261,9 @@ function viewSettings() {
       '<div class="grid2">' +
         '<div><label>نام صاحب حساب</label><input id="s-name" value="' + esc(p.name) + '"></div>' +
         '<div><label>شماره تماس</label><input id="s-phone" inputmode="tel" value="' + esc(p.phone) + '"></div>' +
-        '<div><label>شماره شبا (بدون IR)</label><input id="s-sheba" inputmode="numeric" value="' + esc(p.sheba) + '" placeholder="019000000000000000000001"></div>' +
-        '<div><label>شماره کارت</label><input id="s-card" inputmode="numeric" value="' + esc(p.card) + '" placeholder="6037…"></div>' +
+        '<div><label>شماره شبا (بدون IR)</label><input id="s-sheba" inputmode="numeric" value="' + esc(p.sheba || "") + '" placeholder="019000000000000000000001"></div>' +
+        '<div><label>شماره کارت</label><input id="s-card" inputmode="numeric" value="' + esc(p.card || "") + '" placeholder="6037…"></div>' +
+        '<div><label>نام بانک (نمایش در فاکتور)</label><input id="s-bank" value="' + esc(p.bank || "") + '" placeholder="مثلاً بانک ملت"></div>' +
       "</div>" +
       '<div style="margin-top:12px"><label>پیام راهنمای پرداخت (از {phone} برای شماره تماس استفاده کنید)</label>' +
         '<textarea id="s-note" rows="2">' + esc(p.payNote) + "</textarea></div>" +
@@ -1220,6 +1285,7 @@ function viewSettings() {
     db.profile = {
       name: $("#s-name").value.trim(), phone: $("#s-phone").value.trim(),
       sheba: $("#s-sheba").value.trim(), card: $("#s-card").value.trim(),
+      bank: $("#s-bank").value.trim(),
       payNote: $("#s-note").value.trim()
     };
     save(); toast("ذخیره شد.");
