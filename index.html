@@ -114,6 +114,23 @@ td.num,th.num{text-align:left;direction:ltr}
 .month-tbl td,.month-tbl th{text-align:center}
 .month-tbl td:first-child,.month-tbl th:first-child{text-align:right}
 
+/* Jalali date picker popup */
+.jpicker{position:fixed;z-index:60;background:var(--card);border:1px solid var(--border);
+  border-radius:14px;box-shadow:var(--shadow);padding:12px;width:266px;display:none;user-select:none}
+.jpicker .jp-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.jpicker .jp-head b{font-size:14px}
+.jpicker .jp-nav{border:none;background:transparent;color:var(--muted);font-size:16px;padding:2px 10px;border-radius:8px}
+.jpicker .jp-nav:hover{background:var(--accent-soft);color:var(--accent)}
+.jpicker .jp-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.jpicker .jp-wd{font-size:11px;color:var(--muted);text-align:center;padding:2px 0}
+.jpicker .jp-day{text-align:center;padding:6px 0;border-radius:8px;font-size:13px;cursor:pointer}
+.jpicker .jp-day:hover{background:var(--accent-soft)}
+.jpicker .jp-day.sel{background:var(--accent);color:#fff;font-weight:700}
+.jpicker .jp-day.today{box-shadow:inset 0 0 0 1.5px var(--accent)}
+.jpicker .jp-foot{display:flex;justify-content:space-between;margin-top:8px}
+.jpicker .jp-foot button{border:none;background:transparent;color:var(--accent);font-size:13px;padding:4px 8px;border-radius:8px}
+.jpicker .jp-foot button:hover{background:var(--accent-soft)}
+
 /* invoice share page */
 .inv{max-width:720px;margin:0 auto}
 .inv-head{display:flex;justify-content:space-between;align-items:flex-start;
@@ -222,7 +239,7 @@ function readAmount(el) { return Number(digitsOnly(el.value)) || 0; }
 function today() { return new Date().toISOString().slice(0, 10); }
 function faDate(iso) {
   if (!iso) return "—";
-  try { return new Date(iso).toLocaleDateString("fa-IR"); } catch (e) { return iso; }
+  return isoToJalaliStr(iso) || iso;
 }
 function faMonthKey(iso) {
   try { return new Date(iso).toLocaleDateString("fa-IR", { year: "numeric", month: "long" }); }
@@ -265,6 +282,169 @@ function bindEnter(rootSel, btnSel) {
 function typeBadge(t) {
   return t === "income" ? '<span class="badge b-green">دریافتی</span>'
     : '<span class="badge b-red">هزینه</span>';
+}
+
+/* ---------- Jalali (Persian, Solar Hijri) calendar ----------
+   Internal dates stay Gregorian ISO (YYYY-MM-DD); only the input UI
+   and the popup calendar speak Jalali. */
+function g2j(gy, gm, gd) {
+  var g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+  var jy = (gy <= 1600) ? 0 : 979;
+  gy -= (gy <= 1600) ? 621 : 1600;
+  var gy2 = (gm > 2) ? (gy + 1) : gy;
+  var days = (365 * gy) + (~~((gy2 + 3) / 4)) - (~~((gy2 + 99) / 100)) +
+    (~~((gy2 + 399) / 400)) - 80 + gd + g_d_m[gm - 1];
+  jy += 33 * ~~(days / 12053); days %= 12053;
+  jy += 4 * ~~(days / 1461); days %= 1461;
+  if (days > 365) { jy += ~~((days - 1) / 365); days = (days - 1) % 365; }
+  var jm = (days < 186) ? 1 + ~~(days / 31) : 7 + ~~((days - 186) / 30);
+  var jd = 1 + ((days < 186) ? (days % 31) : ((days - 186) % 30));
+  return [jy, jm, jd];
+}
+function j2g(jy, jm, jd) {
+  var gy = (jy <= 979) ? 621 : 1600;
+  jy -= (jy <= 979) ? 0 : 979;
+  var days = (365 * jy) + (~~(jy / 33) * 8) + (~~(((jy % 33) + 3) / 4)) + 78 + jd +
+    ((jm < 7) ? (jm - 1) * 31 : ((jm - 7) * 30) + 186);
+  gy += 400 * ~~(days / 146097); days %= 146097;
+  if (days > 36524) { gy += 100 * ~~(--days / 36524); days %= 36524; if (days >= 365) days++; }
+  gy += 4 * ~~(days / 1461); days %= 1461;
+  if (days > 365) { gy += ~~((days - 1) / 365); days = (days - 1) % 365; }
+  var gd = days + 1;
+  var leap = ((gy % 4 === 0 && gy % 100 !== 0) || (gy % 400 === 0));
+  var sal = [0, 31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  var gm;
+  for (gm = 1; gm <= 12; gm++) { if (gd <= sal[gm]) break; gd -= sal[gm]; }
+  return [gy, gm, gd];
+}
+function jDate(jy, jm, jd) { var g = j2g(jy, jm, jd); return new Date(g[0], g[1] - 1, g[2]); }
+function jMonthLen(jy, jm) {
+  var ny = (jm === 12) ? jy + 1 : jy, nm = (jm === 12) ? 1 : jm + 1;
+  return Math.round((jDate(ny, nm, 1) - jDate(jy, jm, 1)) / 86400000);
+}
+function isoOf(d) {
+  var p = function (n) { return String(n).padStart(2, "0"); };
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+function faDig(s) { return String(s).replace(/\d/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹"[d]; }); }
+function enDig(s) { return String(s).replace(/[۰-۹]/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹".indexOf(d); }); }
+function isoToJalaliStr(iso) {
+  var p = String(iso || "").split("-");
+  if (p.length !== 3) return "";
+  var j = g2j(+p[0], +p[1], +p[2]);
+  return faDig(j[0]) + "/" + faDig(String(j[1]).padStart(2, "0")) + "/" + faDig(String(j[2]).padStart(2, "0"));
+}
+function parseJalaliText(txt) {
+  var m = enDig(txt || "").trim().match(/^(\d{3,4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})$/);
+  if (!m) return null;
+  var jy = +m[1], jm = +m[2], jd = +m[3];
+  if (jm < 1 || jm > 12) return null;
+  if (jd < 1 || jd > jMonthLen(jy, jm)) return null;
+  var g = j2g(jy, jm, jd);
+  return isoOf(new Date(g[0], g[1] - 1, g[2]));
+}
+function setJalali(sel, iso) {
+  var el = $(sel);
+  el.value = iso ? isoToJalaliStr(iso) : "";
+  el.dataset.iso = iso || "";
+  el.style.borderColor = "";
+}
+function readIso(sel) {
+  var el = $(sel);
+  if (el.dataset.iso) return el.dataset.iso;
+  var parsed = parseJalaliText(el.value);
+  if (parsed) el.dataset.iso = parsed;
+  return parsed || "";
+}
+
+/* popup picker (one instance, re-targeted to the focused input) */
+var JP_MONTHS = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+  "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"];
+var jpEl = null, jpInput = null, jpY = 0, jpM = 0;
+function closePicker() { if (jpEl) jpEl.style.display = "none"; jpInput = null; }
+function openPicker(input) {
+  if (!jpEl) {
+    jpEl = document.createElement("div");
+    jpEl.className = "jpicker";
+    document.body.appendChild(jpEl);
+    document.addEventListener("mousedown", function (ev) {
+      if (jpEl && jpEl.style.display === "block" && jpInput &&
+        !jpEl.contains(ev.target) && ev.target !== jpInput) closePicker();
+    });
+  }
+  jpInput = input;
+  var base = parseJalaliText(input.value) || input.dataset.iso || today();
+  var p = base.split("-");
+  var j = g2j(+p[0], +p[1], +p[2]);
+  jpY = j[0]; jpM = j[1];
+  renderPicker();
+  var r = input.getBoundingClientRect();
+  jpEl.style.display = "block";
+  var top = r.bottom + window.scrollY + 6;
+  var left = Math.max(8, r.right + window.scrollX - jpEl.offsetWidth);
+  jpEl.style.top = top + "px";
+  jpEl.style.left = left + "px";
+}
+function renderPicker() {
+  var len = jMonthLen(jpY, jpM);
+  var offset = (jDate(jpY, jpM, 1).getDay() + 1) % 7; // شنبه first
+  var selIso = jpInput ? (jpInput.dataset.iso || "") : "";
+  var tIso = today();
+  var html = '<div class="jp-head">' +
+    '<button class="jp-nav" data-jp="prev">‹</button>' +
+    "<b>" + JP_MONTHS[jpM - 1] + " " + faDig(jpY) + "</b>" +
+    '<button class="jp-nav" data-jp="next">›</button></div>' +
+    '<div class="jp-grid">' +
+    ["ش", "ی", "د", "س", "چ", "پ", "ج"].map(function (w) { return '<div class="jp-wd">' + w + "</div>"; }).join("");
+  for (var i = 0; i < offset; i++) html += "<div></div>";
+  for (var d = 1; d <= len; d++) {
+    var iso = isoOf(jDate(jpY, jpM, d));
+    html += '<div class="jp-day' + (iso === selIso ? " sel" : "") + (iso === tIso ? " today" : "") +
+      '" data-d="' + d + '">' + faDig(d) + "</div>";
+  }
+  html += "</div>" +
+    '<div class="jp-foot"><button data-jp="clear">پاک کردن</button><button data-jp="today">امروز</button></div>';
+  jpEl.innerHTML = html;
+
+  jpEl.querySelectorAll("[data-jp]").forEach(function (b) {
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      var act = b.dataset.jp;
+      if (act === "prev") { jpM--; if (jpM < 1) { jpM = 12; jpY--; } renderPicker(); }
+      else if (act === "next") { jpM++; if (jpM > 12) { jpM = 1; jpY++; } renderPicker(); }
+      else if (act === "today") { setJalaliFromIso(jpInput, today()); closePicker(); }
+      else if (act === "clear") { jpInput.value = ""; jpInput.dataset.iso = ""; closePicker(); }
+    };
+  });
+  jpEl.querySelectorAll(".jp-day").forEach(function (cell) {
+    cell.onclick = function (ev) {
+      ev.stopPropagation();
+      var d = +cell.dataset.d;
+      var g = j2g(jpY, jpM, d);
+      setJalaliFromIso(jpInput, isoOf(new Date(g[0], g[1] - 1, g[2])));
+      closePicker();
+    };
+  });
+}
+function setJalaliFromIso(input, iso) {
+  input.value = isoToJalaliStr(iso);
+  input.dataset.iso = iso;
+  input.style.borderColor = "";
+}
+function bindJalaliInputs() {
+  document.querySelectorAll(".jdate").forEach(function (el) {
+    el.readOnly = false;
+    el.autocomplete = "off";
+    el.addEventListener("focus", function () { openPicker(el); });
+    el.addEventListener("click", function () { openPicker(el); });
+    el.addEventListener("input", function () { el.dataset.iso = ""; el.style.borderColor = ""; });
+    el.addEventListener("change", function () {
+      if (el.value.trim() && !parseJalaliText(el.value)) {
+        el.style.borderColor = "var(--red)";
+        toast("تاریخ نامعتبر است — مثال: " + isoToJalaliStr(today()));
+      }
+    });
+  });
 }
 
 /* ---------- routing ---------- */
@@ -393,7 +573,7 @@ function viewEntries() {
         '<div><label>نوع</label><select id="e-type"><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
         '<div><label>نام آیتم</label><input id="e-title" placeholder="مثلاً حقوق شهریور"></div>' +
         '<div><label>مبلغ (ریال)</label><input id="e-amount" inputmode="numeric" placeholder="۰٬۰۰۰"></div>' +
-        '<div><label>تاریخ</label><input id="e-date" type="date" value="' + today() + '"></div>' +
+        '<div><label>تاریخ</label><input id="e-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
         '<div><label>شخص (اختیاری)</label><select id="e-person"><option value="">—</option>' + personOptions() + "</select></div>" +
         '<div class="fit"><button class="btn" id="e-add">افزودن</button></div>' +
         '<div class="fit" id="e-cancel-wrap" style="display:none"><button class="btn ghost" id="e-cancel">انصراف</button></div>' +
@@ -463,7 +643,7 @@ function viewEntries() {
         $("#e-type").value = e.type;
         $("#e-title").value = e.title;
         $("#e-amount").value = e.amount.toLocaleString("en-US").replace(/,/g, "٬");
-        $("#e-date").value = e.date;
+        setJalali("#e-date", e.date);
         $("#e-person").value = e.personId || "";
         $("#e-add").textContent = "بروزرسانی";
         $("#e-cancel-wrap").style.display = "";
@@ -476,7 +656,7 @@ function viewEntries() {
     editingEntry = null;
     $("#e-type").value = "income";
     $("#e-title").value = ""; $("#e-amount").value = "";
-    $("#e-date").value = today(); $("#e-person").value = "";
+    setJalali("#e-date", today()); $("#e-person").value = "";
     $("#e-add").textContent = "افزودن";
     $("#e-cancel-wrap").style.display = "none";
     $("#entry-form-title").textContent = "افزودن آیتم جدید";
@@ -496,7 +676,7 @@ function viewEntries() {
     } else {
       db.entries.push({
         id: uid(), type: $("#e-type").value, title: title, amount: amount,
-        date: $("#e-date").value || today(), personId: $("#e-person").value || null,
+        date: readIso("#e-date") || today(), personId: $("#e-person").value || null,
         tracking: tracking()
       });
       save(); toast("آیتم اضافه شد."); viewEntries();
@@ -507,6 +687,7 @@ function viewEntries() {
   });
   list();
   $("#csv-all").onclick = function () { exportCsv(filtered(), $("#f-summary").textContent ? "فیلترشده" : ""); };
+  bindJalaliInputs();
 }
 
 function exportCsv(rows, suffix) {
@@ -637,7 +818,7 @@ function viewCheques() {
       '<div class="row" style="margin-top:10px">' +
         '<div><label>شناسه صیادی (۱۶ رقم)</label><input id="c-sayad" inputmode="numeric" maxlength="16" placeholder="اختیاری"></div>' +
         '<div><label>مبلغ (ریال)</label><input id="c-amount" inputmode="numeric"></div>' +
-        '<div><label>تاریخ سررسید</label><input id="c-due" type="date"></div>' +
+        '<div><label>تاریخ سررسید</label><input id="c-due" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
         '<div><label>شخص (اختیاری)</label><select id="c-person"><option value="">—</option>' + personOptions() + "</select></div>" +
         '<div class="fit"><button class="btn" id="c-add">ثبت چک</button></div>' +
         '<div class="fit" id="c-cancel-wrap" style="display:none"><button class="btn ghost" id="c-cancel">انصراف</button></div>' +
@@ -770,7 +951,7 @@ function viewCheques() {
         $("#c-bank").value = c.bank || "";
         $("#c-sayad").value = c.sayad || "";
         $("#c-amount").value = Number(c.amount).toLocaleString("en-US").replace(/,/g, "٬");
-        $("#c-due").value = c.dueDate;
+        setJalali("#c-due", c.dueDate);
         $("#c-person").value = c.personId || "";
         $("#c-notes").value = c.notes || "";
         $("#c-add").textContent = "بروزرسانی";
@@ -784,7 +965,7 @@ function viewCheques() {
     editingCheque = null;
     $("#c-direction").value = "incoming";
     $("#c-number").value = ""; $("#c-bank").value = ""; $("#c-sayad").value = "";
-    $("#c-amount").value = ""; $("#c-due").value = ""; $("#c-person").value = "";
+    $("#c-amount").value = ""; setJalali("#c-due", ""); $("#c-person").value = "";
     $("#c-notes").value = "";
     $("#c-add").textContent = "ثبت چک";
     $("#c-cancel-wrap").style.display = "none";
@@ -794,7 +975,7 @@ function viewCheques() {
   $("#c-add").onclick = function () {
     var number = $("#c-number").value.trim();
     var amount = readAmount($("#c-amount"));
-    var due = $("#c-due").value;
+    var due = readIso("#c-due");
     var sayad = $("#c-sayad").value.trim();
     if (!number || !(amount > 0) || !due) { toast("شماره چک، مبلغ و سررسید را کامل وارد کنید."); return; }
     if (sayad && sayad.length !== 16) { toast("شناسه صیادی باید ۱۶ رقم باشد (یا خالی بگذارید)."); return; }
@@ -841,6 +1022,7 @@ function viewCheques() {
     toast("فایل CSV دانلود شد.");
   };
   list();
+  bindJalaliInputs();
 }
 
 /* ================= invoices ================= */
@@ -851,7 +1033,7 @@ function viewInvoice() {
     '<div class="card"><h2>ساخت فاکتور جدید</h2>' +
       '<div class="row">' +
         '<div><label>برای چه کسی</label><select id="i-person">' + personOptions() + "</select></div>" +
-        '<div><label>تاریخ</label><input id="i-date" type="date" value="' + today() + '"></div>' +
+        '<div><label>تاریخ</label><input id="i-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
       "</div>" +
       '<div class="row" style="margin-top:12px">' +
         '<div><label>عنوان آیتم</label><input id="i-title" placeholder="نام آیتم"></div>' +
@@ -867,6 +1049,7 @@ function viewInvoice() {
 
   bindAmountInput($("#i-amount"));
   bindEnter(".card", "#i-additem");
+  setJalali("#i-date", today());
 
   function renderDraft() {
     var sum = draftItems.reduce(function (s, i) { return s + i.amount; }, 0);
@@ -896,7 +1079,7 @@ function viewInvoice() {
     db.seq += 1;
     var inv = {
       id: uid(), number: db.seq, tracking: tracking(), personId: $("#i-person").value || null,
-      date: $("#i-date").value || today(), items: draftItems.slice(), paid: false
+      date: readIso("#i-date") || today(), items: draftItems.slice(), paid: false
     };
     db.invoices.unshift(inv);
     draftItems = [];
@@ -953,6 +1136,7 @@ function viewInvoice() {
       save(); toast("فاکتور حذف شد."); viewInvoice();
     };
   });
+  bindJalaliInputs();
 }
 
 function encodeInvoice(v) {
