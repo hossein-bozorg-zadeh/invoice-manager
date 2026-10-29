@@ -142,6 +142,9 @@ td.num,th.num{text-align:left;direction:ltr}
   padding:12px 16px;font-weight:700;margin:14px 0}
 .pay-line .fld{flex:1;min-width:0}
 .inv-body{padding:20px 22px}
+.soc-row{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:16px}
+.soc{border:1px solid var(--border);border-radius:999px;padding:6px 16px;font-size:13.5px;color:var(--text)}
+.soc:hover{border-color:var(--accent);color:var(--accent)}
 .inv-head{display:flex;justify-content:space-between;align-items:flex-start;
   border-bottom:2px dashed var(--border);padding-bottom:14px;margin-bottom:14px;gap:10px;flex-wrap:wrap}
 @media print{
@@ -181,11 +184,14 @@ function defaultData() {
   return {
     profile: {
       name: "", bank: "", sheba: "", card: "", phone: "",
-      payNote: "لطفاً پس از واریز، رسید پرداختی را به شماره {phone} ارسال نمایید."
+      payNote: "لطفاً پس از واریز، رسید پرداختی را به شماره {phone} ارسال نمایید.",
+      socials: { instagram: "", telegram: "", whatsapp: "", site: "" }
     },
-    people: [],   // {id, name, role: "employer"|"employee", phone}
+    people: [],   // {id, name, role, phone, nationalId, address, notes}
     entries: [],  // {id, type:"income"|"expense", title, amount, date, personId, tracking}
-    cheques: [],  // {id, number, amount, dueDate, personId, status:"open"|"cashed"|"bounced"}
+    cheques: [],  // {id, direction, number, bank, sayad, amount, dueDate, personId, notes, status, history}
+    payments: [], // {id, kind:"cash"|"transfer"|"card", amount, date, personId, accountId, notes}
+    accounts: [], // {id, alias, bank, sheba, accNumber, card}
     invoices: [], // {id, number, tracking, personId, date, items:[{title, amount}], paid}
     seq: 1000     // sequential invoice numbers
   };
@@ -202,6 +208,9 @@ function load() {
       if (!c.direction) c.direction = "incoming";
       if (!c.history) c.history = [];
     });
+    if (!d.accounts) d.accounts = [];
+    if (!d.payments) d.payments = [];
+    if (d.profile && !d.profile.socials) d.profile.socials = { instagram: "", telegram: "", whatsapp: "", site: "" };
     return d;
   } catch (e) { return defaultData(); }
 }
@@ -468,6 +477,7 @@ var ROUTES = [
   ["entries", "آیتم‌ها"],
   ["people", "کارمندان و کارفرما"],
   ["cheques", "چک‌ها"],
+  ["payments", "پرداخت‌ها"],
   ["invoice", "فاکتور"],
   ["settings", "تنظیمات"]
 ];
@@ -489,11 +499,12 @@ function renderNav(active) {
 function render() {
   var r = route();
   if (r.indexOf("share/") === 0) { renderShare(decodeURIComponent(r.slice(6))); return; }
-  var known = ["dashboard", "entries", "people", "cheques", "invoice", "settings"];
+  var known = ["dashboard", "entries", "people", "cheques", "payments", "invoice", "settings"];
   if (known.indexOf(r) < 0) r = "dashboard";
   renderNav(r);
   ({ dashboard: viewDashboard, entries: viewEntries, people: viewPeople,
-     cheques: viewCheques, invoice: viewInvoice, settings: viewSettings }[r])();
+     cheques: viewCheques, payments: viewPayments,
+     invoice: viewInvoice, settings: viewSettings }[r])();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", render);
@@ -722,6 +733,10 @@ function exportCsv(rows, suffix) {
 
 /* ================= people ================= */
 var editingPerson = null;
+function personRoleBadge(p) {
+  return p.role === "employer" ? '<span class="badge b-blue">کارفرما</span>'
+    : '<span class="badge b-gray">کارمند</span>';
+}
 function viewPeople() {
   editingPerson = null;
   $("#view").innerHTML =
@@ -729,23 +744,67 @@ function viewPeople() {
       '<div class="row">' +
         '<div><label>نام</label><input id="p-name" placeholder="نام و نام خانوادگی"></div>' +
         '<div><label>نقش</label><select id="p-role"><option value="employer">کارفرما</option><option value="employee">کارمند</option></select></div>' +
-        '<div><label>شماره تماس (اختیاری)</label><input id="p-phone" inputmode="tel" placeholder="09…"></div>' +
+        '<div><label>شماره تماس</label><input id="p-phone" inputmode="tel" placeholder="09…"></div>' +
+        '<div><label>کد ملی (اختیاری)</label><input id="p-nid" inputmode="numeric"></div>' +
+      "</div>" +
+      '<div class="row" style="margin-top:10px">' +
+        '<div><label>آدرس (اختیاری)</label><input id="p-address"></div>' +
+        '<div><label>توضیحات (اختیاری)</label><input id="p-notes" placeholder="مثلاً هماهنگ‌کننده پروژه…"></div>' +
         '<div class="fit"><button class="btn" id="p-add">افزودن</button></div>' +
         '<div class="fit" id="p-cancel-wrap" style="display:none"><button class="btn ghost" id="p-cancel">انصراف</button></div>' +
       "</div>" +
     "</div>" +
-    '<div class="card"><h2>کارکنان شرکت و کارفرماها</h2><div id="people-list"></div></div>';
+    '<div class="card"><h2>کارکنان شرکت و کارفرماها</h2>' +
+      '<div id="person-detail"></div>' +
+      '<div id="people-list"></div>' +
+    "</div>";
 
   bindEnter(".card", "#p-add");
 
+  function showDetail(p) {
+    var inc = 0, exp = 0, nE = 0;
+    db.entries.forEach(function (e) {
+      if (e.personId === p.id) { nE++; if (e.type === "income") inc += Number(e.amount); else exp += Number(e.amount); }
+    });
+    var ch = db.cheques.filter(function (c) { return c.personId === p.id; });
+    var chOpen = ch.filter(function (c) { return c.status === "open"; })
+      .reduce(function (s, c) { return s + Number(c.amount); }, 0);
+    var pm = db.payments.filter(function (x) { return x.personId === p.id; });
+    var pmSum = pm.reduce(function (s, x) { return s + Number(x.amount); }, 0);
+    var inv = db.invoices.filter(function (i) { return i.personId === p.id; });
+
+    $("#person-detail").innerHTML =
+      '<div class="card" style="box-shadow:none;margin:0 0 14px;border-style:dashed">' +
+        '<h2>پروفایل: ' + esc(p.name) + ' ' + personRoleBadge(p) + '</h2>' +
+        '<div class="grid2">' +
+          '<div class="hint">📞 شماره تماس: <b class="mono">' + esc(p.phone || "—") + '</b></div>' +
+          '<div class="hint">🪪 کد ملی: <b class="mono">' + esc(p.nationalId || "—") + '</b></div>' +
+          '<div class="hint" style="grid-column:1/-1">📍 آدرس: <b>' + esc(p.address || "—") + '</b></div>' +
+          '<div class="hint" style="grid-column:1/-1">📝 توضیحات: <b>' + esc(p.notes || "—") + '</b></div>' +
+        "</div>" +
+        '<div class="grid3" style="margin-top:12px">' +
+          '<div class="stat income"><div class="t">دریافتی از این شخص</div><div class="v">' + money(inc) + '</div></div>' +
+          '<div class="stat expense"><div class="t">هزینه برای این شخص</div><div class="v">' + money(exp) + '</div></div>' +
+          '<div class="stat balance"><div class="t">آیتم‌ها / چک در جریان</div><div class="v">' + money(nE) + ' <span style="font-size:13px">—</span> ' + money(chOpen) + '</div></div>' +
+        "</div>" +
+        '<p class="hint" style="margin-top:10px">چک‌ها: ' + money(ch.length) + ' مورد — پرداخت‌های نقدی/بانکی: ' + money(pm.length) + ' مورد (' + money(pmSum) + ' ریال) — فاکتورها: ' + money(inv.length) + ' فاکتور</p>' +
+        '<div class="actions"><button class="btn ghost sm" data-close="person-detail">بستن</button></div>' +
+      "</div>";
+    $("#person-detail").querySelector("[data-close]").onclick = function () {
+      $("#person-detail").innerHTML = "";
+    };
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
   function list() {
     $("#people-list").innerHTML = db.people.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>نام</th><th>نقش</th><th>شماره تماس</th><th></th></tr></thead><tbody>" +
+      "<th>نام</th><th>نقش</th><th>شماره تماس</th><th>کد ملی</th><th></th></tr></thead><tbody>" +
       db.people.map(function (p) {
-        return "<tr><td>" + esc(p.name) + "</td><td>" +
-          (p.role === "employer" ? '<span class="badge b-blue">کارفرما</span>' : '<span class="badge b-gray">کارمند</span>') +
-          "</td><td class='mono'>" + esc(p.phone || "—") + "</td>" +
-          "<td><div style='display:flex;gap:6px'>" +
+        return "<tr><td><b>" + esc(p.name) + "</b>" + (p.notes ? '<br><span class="hint">' + esc(p.notes) + "</span>" : "") +
+          "</td><td>" + personRoleBadge(p) +
+          "</td><td class='mono'>" + esc(p.phone || "—") +
+          "</td><td class='mono'>" + esc(p.nationalId || "—") + "</td>" +
+          "<td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+          "<button class='btn ghost sm' data-detail='" + p.id + "'>جزئیات</button>" +
           "<button class='btn icon sm blue' data-edit='" + p.id + "'>ویرایش</button>" +
           "<button class='btn icon sm' data-del='" + p.id + "'>حذف</button></div></td></tr>";
       }).join("") + "</tbody></table></div>" : '<div class="empty">هنوز کسی اضافه نشده است.</div>';
@@ -762,19 +821,29 @@ function viewPeople() {
         var p = db.people.find(function (x) { return x.id === b.dataset.edit; });
         if (!p) return;
         editingPerson = p;
-        $("#p-name").value = p.name;
-        $("#p-role").value = p.role;
+        $("#p-name").value = p.name || "";
+        $("#p-role").value = p.role || "employer";
         $("#p-phone").value = p.phone || "";
+        $("#p-nid").value = p.nationalId || "";
+        $("#p-address").value = p.address || "";
+        $("#p-notes").value = p.notes || "";
         $("#p-add").textContent = "بروزرسانی";
         $("#p-cancel-wrap").style.display = "";
         $("#p-form-title").textContent = "ویرایش شخص";
         window.scrollTo({ top: 0, behavior: "smooth" });
       };
     });
+    $("#people-list").querySelectorAll("[data-detail]").forEach(function (b) {
+      b.onclick = function () {
+        var p = db.people.find(function (x) { return x.id === b.dataset.detail; });
+        if (p) showDetail(p);
+      };
+    });
   }
   function resetForm() {
     editingPerson = null;
     $("#p-name").value = ""; $("#p-role").value = "employer"; $("#p-phone").value = "";
+    $("#p-nid").value = ""; $("#p-address").value = ""; $("#p-notes").value = "";
     $("#p-add").textContent = "افزودن";
     $("#p-cancel-wrap").style.display = "none";
     $("#p-form-title").textContent = "افزودن کارمند / کارفرما";
@@ -787,9 +856,16 @@ function viewPeople() {
       editingPerson.name = name;
       editingPerson.role = $("#p-role").value;
       editingPerson.phone = $("#p-phone").value.trim();
+      editingPerson.nationalId = $("#p-nid").value.trim();
+      editingPerson.address = $("#p-address").value.trim();
+      editingPerson.notes = $("#p-notes").value.trim();
       save(); toast("بروزرسانی شد."); resetForm(); list();
     } else {
-      db.people.push({ id: uid(), name: name, role: $("#p-role").value, phone: $("#p-phone").value.trim() });
+      db.people.push({
+        id: uid(), name: name, role: $("#p-role").value, phone: $("#p-phone").value.trim(),
+        nationalId: $("#p-nid").value.trim(), address: $("#p-address").value.trim(),
+        notes: $("#p-notes").value.trim()
+      });
       save(); toast("اضافه شد."); viewPeople();
     }
   };
@@ -1062,6 +1138,186 @@ function viewCheques() {
   bindJalaliInputs();
 }
 
+/* ================= payments (cash / bank transfer) ================= */
+var PM_KINDS = { cash: "نقدی", transfer: "واریز به حساب", card: "کارت به کارت" };
+var editingPayment = null;
+function accountOptions(sel) {
+  return db.accounts.map(function (a) {
+    return '<option value="' + a.id + '"' + (a.id === sel ? " selected" : "") + ">" +
+      esc((a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "")) + "</option>";
+  }).join("");
+}
+function viewPayments() {
+  editingPayment = null;
+  $("#view").innerHTML =
+    '<div id="pm-stats" class="grid3" style="margin-bottom:16px"></div>' +
+    '<div class="card"><h2 id="pm-form-title">ثبت پرداخت جدید</h2>' +
+      '<div class="row">' +
+        '<div><label>روش پرداخت</label><select id="pm-kind"><option value="cash">نقدی</option><option value="transfer">واریز به حساب بانکی</option><option value="card">کارت به کارت</option></select></div>' +
+        '<div><label>مبلغ (ریال)</label><input id="pm-amount" inputmode="numeric"></div>' +
+        '<div><label>تاریخ</label><input id="pm-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
+        '<div><label>شخص (پرداخت‌کننده)</label><select id="pm-person"><option value="">—</option>' + personOptions() + "</select></div>" +
+        '<div id="pm-account-wrap"><label>حساب بانکی من</label><select id="pm-account"><option value="">—</option>' + accountOptions() + "</select></div>" +
+        '<div class="fit"><button class="btn" id="pm-add">ثبت</button></div>' +
+        '<div class="fit" id="pm-cancel-wrap" style="display:none"><button class="btn ghost" id="pm-cancel">انصراف</button></div>' +
+      "</div>" +
+      '<div style="margin-top:10px"><label>توضیحات (اختیاری)</label><input id="pm-notes" placeholder="مثلاً بابت مرحله دوم پروژه…"></div>' +
+    "</div>" +
+    '<div class="card"><h2>پرداخت‌های نقدی و بانکی</h2>' +
+      '<div class="row" style="margin-bottom:12px">' +
+        '<div><label>جستجو</label><input id="pf-q" placeholder="توضیحات…"></div>' +
+        '<div><label>روش</label><select id="pf-kind"><option value="">همه</option><option value="cash">نقدی</option><option value="transfer">واریز به حساب</option><option value="card">کارت به کارت</option></select></div>' +
+        '<div><label>شخص</label><select id="pf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
+        '<div><label>از تاریخ</label><input id="pf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
+        '<div><label>تا</label><input id="pf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="pf-csv">دانلود اکسل (CSV)</button></div>' +
+      "</div>" +
+      '<div id="payment-list"></div>' +
+    "</div>";
+
+  bindAmountInput($("#pm-amount"));
+  bindEnter(".card", "#pm-add");
+  setJalali("#pm-date", today());
+
+  $("#pm-kind").addEventListener("change", function () {
+    $("#pm-account-wrap").style.display = $("#pm-kind").value === "cash" ? "none" : "";
+  });
+
+  function filtered() {
+    var q = $("#pf-q").value.trim();
+    var kind = $("#pf-kind").value;
+    var person = $("#pf-person").value;
+    var from = readIso("#pf-from");
+    var to = readIso("#pf-to");
+    return db.payments.filter(function (x) {
+      if (kind && x.kind !== kind) return false;
+      if (person && x.personId !== person) return false;
+      if (from && (x.date || "") < from) return false;
+      if (to && (x.date || "") > to) return false;
+      if (q && (x.notes || "").indexOf(q) < 0) return false;
+      return true;
+    }).sort(function (a, b) { return b.date < a.date ? -1 : 1; });
+  }
+  function accountLabel(id) {
+    for (var i = 0; i < db.accounts.length; i++) {
+      var a = db.accounts[i];
+      if (a.id === id) return (a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "");
+    }
+    return "—";
+  }
+  function kindBadge(k) {
+    return k === "cash" ? '<span class="badge b-green">نقدی</span>'
+      : k === "transfer" ? '<span class="badge b-blue">واریز به حساب</span>'
+      : '<span class="badge b-amber">کارت به کارت</span>';
+  }
+  function stats(list) {
+    var g = { cash: 0, transfer: 0, card: 0 };
+    list.forEach(function (x) { g[x.kind] = (g[x.kind] || 0) + Number(x.amount || 0); });
+    $("#pm-stats").innerHTML =
+      '<div class="stat income"><div class="t">جمع نقدی</div><div class="v">' + money(g.cash) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat balance"><div class="t">جمع واریز به حساب</div><div class="v">' + money(g.transfer) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat expense"><div class="t">جمع کارت به کارت</div><div class="v">' + money(g.card) + ' <span style="font-size:12px">ریال</span></div></div>';
+  }
+  function list() {
+    var rows = filtered();
+    stats(rows);
+    $("#payment-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>روش</th><th>مبلغ (ریال)</th><th>تاریخ</th><th>شخص</th><th>حساب</th><th>توضیحات</th><th></th>" +
+      "</tr></thead><tbody>" + rows.map(function (x) {
+        return "<tr><td>" + kindBadge(x.kind) + "</td><td class='num'>" + money(x.amount) +
+          "</td><td>" + faDate(x.date) + "</td><td>" + esc(personName(x.personId)) +
+          "</td><td>" + esc(x.kind === "cash" ? "—" : accountLabel(x.accountId)) +
+          "</td><td>" + esc(x.notes || "—") + "</td>" +
+          "<td><div style='display:flex;gap:6px'>" +
+          "<button class='btn icon sm blue' data-edit='" + x.id + "'>ویرایش</button>" +
+          "<button class='btn icon sm' data-del='" + x.id + "'>حذف</button></div></td></tr>";
+      }).join("") + "</tbody></table></div>"
+      : '<div class="empty">پرداختی ثبت نشده است.</div>';
+
+    $("#payment-list").querySelectorAll("[data-del]").forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm("آیا از حذف این پرداخت مطمئن هستید؟")) return;
+        db.payments = db.payments.filter(function (x) { return x.id !== b.dataset.del; });
+        if (editingPayment && editingPayment.id === b.dataset.del) resetForm();
+        save(); toast("پرداخت حذف شد."); list();
+      };
+    });
+    $("#payment-list").querySelectorAll("[data-edit]").forEach(function (b) {
+      b.onclick = function () {
+        var x = db.payments.find(function (y) { return y.id === b.dataset.edit; });
+        if (!x) return;
+        editingPayment = x;
+        $("#pm-kind").value = x.kind;
+        $("#pm-kind").dispatchEvent(new Event("change"));
+        $("#pm-amount").value = Number(x.amount).toLocaleString("en-US").replace(/,/g, "٬");
+        setJalali("#pm-date", x.date);
+        $("#pm-person").value = x.personId || "";
+        $("#pm-account").value = x.accountId || "";
+        $("#pm-notes").value = x.notes || "";
+        $("#pm-add").textContent = "بروزرسانی";
+        $("#pm-cancel-wrap").style.display = "";
+        $("#pm-form-title").textContent = "ویرایش پرداخت";
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
+    });
+  }
+  function resetForm() {
+    editingPayment = null;
+    $("#pm-kind").value = "cash";
+    $("#pm-kind").dispatchEvent(new Event("change"));
+    $("#pm-amount").value = "";
+    setJalali("#pm-date", today());
+    $("#pm-person").value = ""; $("#pm-account").value = ""; $("#pm-notes").value = "";
+    $("#pm-add").textContent = "ثبت";
+    $("#pm-cancel-wrap").style.display = "none";
+    $("#pm-form-title").textContent = "ثبت پرداخت جدید";
+  }
+  $("#pm-cancel").onclick = resetForm;
+  $("#pm-add").onclick = function () {
+    var amount = readAmount($("#pm-amount"));
+    var date = readIso("#pm-date") || today();
+    if (!(amount > 0)) { toast("لطفاً مبلغ معتبر وارد کنید."); return; }
+    var kind = $("#pm-kind").value;
+    if (editingPayment) {
+      editingPayment.kind = kind;
+      editingPayment.amount = amount;
+      editingPayment.date = date;
+      editingPayment.personId = $("#pm-person").value || null;
+      editingPayment.accountId = kind === "cash" ? null : ($("#pm-account").value || null);
+      editingPayment.notes = $("#pm-notes").value.trim();
+      save(); toast("پرداخت بروزرسانی شد."); resetForm(); list();
+    } else {
+      db.payments.push({
+        id: uid(), kind: kind, amount: amount, date: date,
+        personId: $("#pm-person").value || null,
+        accountId: kind === "cash" ? null : ($("#pm-account").value || null),
+        notes: $("#pm-notes").value.trim()
+      });
+      save(); toast("پرداخت ثبت شد."); viewPayments();
+    }
+  };
+  ["#pf-q", "#pf-kind", "#pf-person", "#pf-from", "#pf-to"].forEach(function (s) {
+    $(s).addEventListener("input", list);
+  });
+  $("#pf-csv").onclick = function () {
+    var rows = [["روش", "مبلغ (ریال)", "تاریخ", "شخص", "حساب", "توضیحات"]];
+    filtered().forEach(function (x) {
+      rows.push([PM_KINDS[x.kind], x.amount, x.date, personName(x.personId),
+        x.kind === "cash" ? "" : accountLabel(x.accountId), x.notes || ""]);
+    });
+    var csv = "\uFEFF" + rows.map(function (r) {
+      return r.map(function (c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(",");
+    }).join("\r\n");
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = "payments.csv";
+    a.click();
+    toast("فایل CSV دانلود شد.");
+  };
+  list();
+  bindJalaliInputs();
+}
+
 /* ================= invoices ================= */
 var draftItems = [];
 function viewInvoice() {
@@ -1181,7 +1437,9 @@ function encodeInvoice(v) {
   var pr = {
     name: db.profile.name || "", bank: db.profile.bank || "",
     sheba: db.profile.sheba || "", card: db.profile.card || "",
-    phone: db.profile.phone || "", payNote: db.profile.payNote || ""
+    phone: db.profile.phone || "", payNote: db.profile.payNote || "",
+    socials: db.profile.socials || {},
+    accounts: db.accounts || []
   };
   var payload = {
     t: v.tracking, n: v.number || null, d: v.date, p: personName(v.personId),
@@ -1214,6 +1472,10 @@ function renderShare(code) {
   var pr = (v && v.pr) ? v.pr : db.profile;
   var note = String(pr.payNote || "").replace("{phone}", pr.phone || "…");
   var paid = !!(v && (v.pd === 1 || v.pd === true));
+  var accounts = (pr.accounts && pr.accounts.length) ? pr.accounts
+    : (pr.sheba || pr.card) ? [{ id: "legacy", alias: "", bank: pr.bank || "",
+        sheba: pr.sheba || "", card: pr.card || "" }] : [];
+  var so = pr.socials || {};
 
   $("#view").innerHTML = !v ?
     '<div class="card inv"><div class="inv-inner"><div class="inv-body"><div class="empty">فاکتوری برای نمایش وجود ندارد.</div></div></div></div>' :
@@ -1237,11 +1499,24 @@ function renderShare(code) {
           (paid ? '<div class="paid-banner">✅ این فاکتور تسویه شده است. با تشکر از پرداخت شما.</div>' : "") +
           '<h2 style="margin-top:18px;font-size:15px">راهنمای پرداخت</h2>' +
           '<p class="hint">مشتری گرامی، جهت تسویه حساب لطفاً مبلغ فاکتور را به یکی از روش‌های زیر پرداخت نمایید:</p>' +
-          (pr.sheba ? payLine("🏦", "شماره شبا" + (pr.bank ? " — " + pr.bank : ""), "IR" + pr.sheba, pr.name ? "به نام " + pr.name : "") : "") +
-          (pr.card ? payLine("💳", "شماره کارت", pr.card, "") : "") +
-          (!pr.sheba && !pr.card ? '<div class="empty">روش پرداختی ثبت نشده است — از تنظیمات شبا/کارت را وارد کنید.</div>' : "") +
+          (accounts.length ? accounts.map(function (a, i) {
+            var title = (a.alias || a.bank || "حساب " + money(i + 1)) + (a.bank ? " — " + a.bank : "");
+            var lines = "";
+            if (a.sheba) lines += payLine("🏦", "شماره شبا — " + title, "IR" + a.sheba, pr.name ? "به نام " + pr.name : "");
+            if (a.card) lines += payLine("💳", "شماره کارت — " + title, a.card, "");
+            return lines;
+          }).join("") : "") +
+          (!accounts.length ? '<div class="empty">روش پرداختی ثبت نشده است — از تنظیمات، حساب‌های بانکی را وارد کنید.</div>' : "") +
           '<p class="hint" style="margin-top:10px">' + esc(note) + "</p>" +
           '<div class="actions noprint"><button class="btn ghost" onclick="window.print()">🖨 چاپ فاکتور</button></div>' +
+          (function () {
+            var links = [];
+            if (so.instagram) links.push('<a class="soc" href="https://instagram.com/' + esc(so.instagram) + '" target="_blank" rel="noopener">📷 اینستاگرام</a>');
+            if (so.telegram) links.push('<a class="soc" href="https://t.me/' + esc(so.telegram) + '" target="_blank" rel="noopener">✈️ تلگرام</a>');
+            if (so.whatsapp) links.push('<a class="soc" href="https://wa.me/' + esc(String(so.whatsapp).replace(/\D/g, "")) + '" target="_blank" rel="noopener">💬 واتساپ</a>');
+            if (so.site) links.push('<a class="soc" href="' + esc(so.site) + '" target="_blank" rel="noopener">🌐 وب‌سایت</a>');
+            return links.length ? '<div class="soc-row">' + links.join("") + "</div>" : "";
+          })() +
           '<p class="hint noprint" style="text-align:center;margin-top:14px;opacity:.7">این فاکتور به‌صورت دیجیتال صادر شده است.</p>' +
         "</div>" +
       "</div>" +
@@ -1255,6 +1530,7 @@ function renderShare(code) {
 /* ================= settings ================= */
 function viewSettings() {
   var p = db.profile;
+  var so = p.socials || {};
   $("#view").innerHTML =
     '<div class="card"><h2>مدیریت پروفایل</h2>' +
       '<p class="hint">این اطلاعات در صفحه پرداخت فاکتور (لینک اشتراک‌گذاری‌شده) نمایش داده می‌شود.</p>' +
@@ -1276,6 +1552,31 @@ function viewSettings() {
         '<button class="btn ghost" id="s-import">بازیابی از فایل</button>' +
         '<input type="file" id="s-file" accept=".json" style="display:none">' +
       "</div>" +
+    "</div>" +
+    '<div class="card"><h2>حساب‌های بانکی من</h2>' +
+      '<p class="hint">همه حساب‌ها در صفحه پرداخت مشتری (لینک فاکتور) با دکمه کپی نمایش داده می‌شوند. پرداخت‌های واریزی هم به یک حساب لینک می‌شوند.</p>' +
+      '<div class="row">' +
+        '<div><label>نام مستعار</label><input id="a-alias" placeholder="مثلاً جاری شرکت"></div>' +
+        '<div><label>بانک</label><input id="a-bank" list="bank-list-s" placeholder="بانک…"><datalist id="bank-list-s">' +
+          IRAN_BANKS.map(function (b) { return '<option value="' + b + '">'; }).join("") + "</datalist></div>" +
+        '<div><label>شماره شبا (بدون IR)</label><input id="a-sheba" inputmode="numeric"></div>' +
+      "</div>" +
+      '<div class="row" style="margin-top:10px">' +
+        '<div><label>شماره حساب</label><input id="a-acc" inputmode="numeric"></div>' +
+        '<div><label>شماره کارت</label><input id="a-card" inputmode="numeric"></div>' +
+        '<div class="fit"><button class="btn" id="a-add">افزودن حساب</button></div>' +
+      "</div>" +
+      '<div id="accounts-list" style="margin-top:12px"></div>' +
+    "</div>" +
+    '<div class="card"><h2>شبکه‌های اجتماعی من</h2>' +
+      '<p class="hint">در پایین صفحه پرداخت مشتری نمایش داده می‌شوند.</p>' +
+      '<div class="grid2">' +
+        '<div><label>اینستاگرام (نام کاربری)</label><input id="so-instagram" value="' + esc(so.instagram || "") + '" placeholder="username"></div>' +
+        '<div><label>تلگرام (نام کاربری بدون @)</label><input id="so-telegram" value="' + esc(so.telegram || "") + '" placeholder="username"></div>' +
+        '<div><label>واتساپ (شماره با کد کشور)</label><input id="so-whatsapp" value="' + esc(so.whatsapp || "") + '" placeholder="98912…"></div>' +
+        '<div><label>وب‌سایت</label><input id="so-site" value="' + esc(so.site || "") + '" placeholder="https://…"></div>' +
+      "</div>" +
+      '<div class="actions"><button class="btn" id="so-save">ذخیره</button></div>' +
     "</div>" +
     '<div class="card"><h2 style="color:var(--red)">پاک کردن همه داده‌ها</h2>' +
       '<div class="actions"><button class="btn red" id="s-reset">پاک کردن کامل</button></div>' +
@@ -1312,6 +1613,48 @@ function viewSettings() {
     };
     r.readAsText(f);
   };
+  $("#so-save").onclick = function () {
+    db.profile.socials = {
+      instagram: $("#so-instagram").value.trim().replace(/^@/, ""),
+      telegram: $("#so-telegram").value.trim().replace(/^@/, ""),
+      whatsapp: $("#so-whatsapp").value.trim(),
+      site: $("#so-site").value.trim()
+    };
+    save(); toast("ذخیره شد.");
+  };
+
+  function accountList() {
+    $("#accounts-list").innerHTML = db.accounts.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>نام مستعار</th><th>بانک</th><th>شبا</th><th>کارت</th><th></th></tr></thead><tbody>" +
+      db.accounts.map(function (a) {
+        return "<tr><td><b>" + esc(a.alias || "—") + "</b></td><td>" + esc(a.bank || "—") +
+          "</td><td class='mono'>" + esc(a.sheba ? "IR" + a.sheba : "—") +
+          "</td><td class='mono'>" + esc(a.card || "—") + "</td>" +
+          "<td><button class='btn icon sm' data-adel='" + a.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<div class="hint">هنوز حسابی اضافه نشده است. (شبا/کارت پروفایل به‌عنوان حساب پیش‌فرض نمایش داده می‌شود.)</div>';
+    $("#accounts-list").querySelectorAll("[data-adel]").forEach(function (b) {
+      b.onclick = function () {
+        if (!confirm("حذف این حساب بانکی؟")) return;
+        db.accounts = db.accounts.filter(function (x) { return x.id !== b.dataset.adel; });
+        save(); toast("حساب حذف شد."); accountList();
+      };
+    });
+  }
+  accountList();
+  $("#a-add").onclick = function () {
+    var sheba = $("#a-sheba").value.trim();
+    var card = $("#a-card").value.trim();
+    if (!sheba && !card) { toast("شبا یا شماره کارت را وارد کنید."); return; }
+    if (sheba && !/^\d{24}$/.test(sheba)) { toast("شبا باید ۲۴ رقم بدون IR باشد."); return; }
+    db.accounts.push({
+      id: uid(), alias: $("#a-alias").value.trim(), bank: $("#a-bank").value.trim(),
+      sheba: sheba, accNumber: $("#a-acc").value.trim(), card: card
+    });
+    save(); toast("حساب اضافه شد."); accountList();
+    $("#a-alias").value = ""; $("#a-bank").value = ""; $("#a-sheba").value = "";
+    $("#a-acc").value = ""; $("#a-card").value = "";
+  };
+
   $("#s-reset").onclick = function () {
     if (!confirm("آیا از پاک کردن تمام داده‌ها (آیتم‌ها، چک‌ها، فاکتورها و اشخاص) مطمئن هستید؟ این کار قابل بازگشت نیست.")) return;
     if (!confirm("مطمئن هستید؟")) return;
