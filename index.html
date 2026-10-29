@@ -172,7 +172,11 @@ function load() {
     var d = JSON.parse(raw);
     var base = defaultData();
     for (var k in base) if (d[k] === undefined) d[k] = base[k];
-    d.cheques.forEach(function (c) { if (!c.status) c.status = "open"; });
+    d.cheques.forEach(function (c) {
+      if (!c.status) c.status = "open";
+      if (!c.direction) c.direction = "incoming";
+      if (!c.history) c.history = [];
+    });
     return d;
   } catch (e) { return defaultData(); }
 }
@@ -317,9 +321,14 @@ function viewDashboard() {
   var t = totals();
   var month = totals(db.entries.filter(function (e) { return isThisMonth(e.date); }));
   var recent = db.entries.slice().sort(function (a, b) { return b.date < a.date ? -1 : 1; }).slice(0, 8);
-  var soonCheques = db.cheques.filter(function (c) {
-    return c.status === "open" && (function () { var d = daysTo(c.dueDate); return d !== null && d <= 14; })();
+  var openCheques = db.cheques.filter(function (c) { return c.status === "open"; });
+  var soonCheques = openCheques.filter(function (c) {
+    var d = daysTo(c.dueDate); return d !== null && d <= 14;
   }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, 5);
+  var incomingOpen = openCheques.filter(function (c) { return c.direction !== "outgoing"; })
+    .reduce(function (s, c) { return s + Number(c.amount || 0); }, 0);
+  var outgoingOpen = openCheques.filter(function (c) { return c.direction === "outgoing"; })
+    .reduce(function (s, c) { return s + Number(c.amount || 0); }, 0);
 
   /* per-Persian-month report, last 6 months that have data */
   var byMonth = {};
@@ -352,12 +361,14 @@ function viewDashboard() {
         : '<div class="empty">هنوز آیتمی ثبت نشده است. از تب «آیتم‌ها» شروع کنید.</div>') +
       "</div>" +
       '<div class="card"><h2>چک‌های در جریان</h2>' +
+        '<div class="hint" style="margin-bottom:10px">دریافتی: <b style="color:var(--green)">' + money(incomingOpen) + '</b> ریال — پرداختی: <b style="color:var(--red)">' + money(outgoingOpen) + '</b> ریال</div>' +
         (soonCheques.length ? '<div class="tblwrap"><table><tbody>' + soonCheques.map(function (c) {
           var d = daysTo(c.dueDate);
           var badge = d < 0 ? '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>'
             : d === 0 ? '<span class="badge b-amber">امروز</span>'
             : '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
-          return "<tr><td>چک " + esc(c.number) + "</td><td class='num'>" + money(c.amount) + "</td><td>" + badge + "</td></tr>";
+          return "<tr><td>" + dirBadge(c) + "</td><td>چک " + esc(c.number) + (c.bank ? " <span class='hint'>(" + esc(c.bank) + ")</span>" : "") +
+            "</td><td class='num'>" + money(c.amount) + "</td><td>" + badge + "</td></tr>";
         }).join("") + "</tbody></table></div>"
         : '<div class="empty">چکی در ۱۴ روز آینده نیست.</div>') +
       "</div>" +
@@ -590,51 +601,144 @@ function viewPeople() {
 }
 
 /* ================= cheques ================= */
+var IRAN_BANKS = ["بانک ملی ایران", "بانک صادرات", "بانک ملت", "بانک تجارت", "بانک سپه",
+  "بانک کشاورزی", "بانک رفاه", "بانک مسکن", "بانک پارسیان", "بانک پاسارگاد",
+  "بانک سامان", "بانک آینده", "بانک شهر", "بانک رسالت", "بانک سینا",
+  "بانک دی", "بانک گردشگری", "بانک کوثر", "بانک انصار", "بانک مهر ایران",
+  "بانک اقتصاد نوین", "بانک کارآفرین", "بانک سرمایه"];
+var editingCheque = null;
+
+function statusBadge(c) {
+  if (c.status === "cashed") return '<span class="badge b-green">واصل</span>';
+  if (c.status === "bounced") return '<span class="badge b-red">برگشتی</span>';
+  var d = daysTo(c.dueDate);
+  if (d === null) return '<span class="badge b-gray">در جریان</span>';
+  if (d < 0) return '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>';
+  if (d === 0) return '<span class="badge b-amber">امروز</span>';
+  return '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
+}
+function dirBadge(c) {
+  return c.direction === "outgoing"
+    ? '<span class="badge b-red">پرداختی</span>'
+    : '<span class="badge b-green">دریافتی</span>';
+}
+
 function viewCheques() {
+  editingCheque = null;
   $("#view").innerHTML =
-    '<div class="card"><h2>افزودن چک جدید</h2>' +
+    '<div id="cheque-stats" class="grid3" style="margin-bottom:16px"></div>' +
+    '<div class="card"><h2 id="c-form-title">افزودن چک جدید</h2>' +
       '<div class="row">' +
+        '<div><label>نوع چک</label><select id="c-direction"><option value="incoming">دریافتی (از دیگران)</option><option value="outgoing">پرداختی (صادرشده)</option></select></div>' +
         '<div><label>شماره چک</label><input id="c-number" placeholder="مثلاً ۱۲۳۴۵۶"></div>' +
+        '<div><label>بانک</label><input id="c-bank" list="bank-list" placeholder="بانک…"><datalist id="bank-list">' +
+          IRAN_BANKS.map(function (b) { return '<option value="' + b + '">'; }).join("") + "</datalist></div>" +
+      "</div>" +
+      '<div class="row" style="margin-top:10px">' +
+        '<div><label>شناسه صیادی (۱۶ رقم)</label><input id="c-sayad" inputmode="numeric" maxlength="16" placeholder="اختیاری"></div>' +
         '<div><label>مبلغ (ریال)</label><input id="c-amount" inputmode="numeric"></div>' +
         '<div><label>تاریخ سررسید</label><input id="c-due" type="date"></div>' +
         '<div><label>شخص (اختیاری)</label><select id="c-person"><option value="">—</option>' + personOptions() + "</select></div>" +
         '<div class="fit"><button class="btn" id="c-add">ثبت چک</button></div>' +
+        '<div class="fit" id="c-cancel-wrap" style="display:none"><button class="btn ghost" id="c-cancel">انصراف</button></div>' +
       "</div>" +
+      '<div style="margin-top:10px"><label>توضیحات</label><input id="c-notes" placeholder="اختیاری — مثلاً بابت قرارداد شماره…"></div>' +
     "</div>" +
-    '<div class="card"><h2>چک‌ها</h2><div id="cheque-list"></div></div>';
+    '<div class="card"><h2>چک‌ها</h2>' +
+      '<div class="row" style="margin-bottom:12px">' +
+        '<div><label>جستجو</label><input id="cf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
+        '<div><label>وضعیت</label><select id="cf-status"><option value="">همه</option><option value="open">در جریان</option><option value="cashed">واصل</option><option value="bounced">برگشتی</option></select></div>' +
+        '<div><label>نوع</label><select id="cf-dir"><option value="">همه</option><option value="incoming">دریافتی</option><option value="outgoing">پرداختی</option></select></div>' +
+        '<div><label>شخص</label><select id="cf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
+        '<div><label>ترتیب</label><select id="cf-sort"><option value="due">نزدیک‌ترین سررسید</option><option value="amount">بزرگ‌ترین مبلغ</option><option value="added">جدیدترین ثبت</option></select></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="cf-csv">دانلود اکسل (CSV)</button></div>' +
+      "</div>" +
+      '<div id="cheque-detail"></div>' +
+      '<div id="cheque-list"></div>' +
+    "</div>";
 
   bindAmountInput($("#c-amount"));
   bindEnter(".card", "#c-add");
 
-  function statusBadge(c) {
-    if (c.status === "cashed") return '<span class="badge b-green">واصل</span>';
-    if (c.status === "bounced") return '<span class="badge b-red">برگشتی</span>';
-    var d = daysTo(c.dueDate);
-    if (d === null) return '<span class="badge b-gray">در جریان</span>';
-    if (d < 0) return '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>';
-    if (d === 0) return '<span class="badge b-amber">امروز</span>';
-    return '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
+  function filtered() {
+    var q = $("#cf-q").value.trim();
+    var st = $("#cf-status").value;
+    var dir = $("#cf-dir").value;
+    var person = $("#cf-person").value;
+    var sort = $("#cf-sort").value;
+    var rows = db.cheques.filter(function (c) {
+      if (st && c.status !== st) return false;
+      if (dir && c.direction !== dir) return false;
+      if (person && c.personId !== person) return false;
+      if (q && ((c.number || "") + " " + (c.bank || "") + " " + (c.sayad || "") + " " + (c.notes || "")).indexOf(q) < 0) return false;
+      return true;
+    });
+    if (sort === "amount") rows.sort(function (a, b) { return b.amount - a.amount; });
+    else if (sort === "added") rows.sort(function (a, b) { return a.id < b.id ? 1 : -1; });
+    else rows.sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+    return rows;
+  }
+  function stats(list) {
+    var g = { open: { n: 0, sum: 0 }, cashed: { n: 0, sum: 0 }, bounced: { n: 0, sum: 0 } };
+    list.forEach(function (c) {
+      var s = g[c.status] || g.open;
+      s.n += 1; s.sum += Number(c.amount || 0);
+    });
+    $("#cheque-stats").innerHTML =
+      '<div class="stat balance"><div class="t">در جریان</div><div class="v">' + money(g.open.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.open.sum) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat income"><div class="t">واصل شده</div><div class="v">' + money(g.cashed.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.cashed.sum) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat expense"><div class="t">برگشتی</div><div class="v">' + money(g.bounced.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.bounced.sum) + ' <span style="font-size:12px">ریال</span></div></div>';
+  }
+  function showDetail(c) {
+    var hist = (c.history || []).map(function (h) {
+      return '<span class="badge ' + (h.s === "cashed" ? "b-green" : h.s === "bounced" ? "b-red" : "b-blue") + '">' +
+        (h.s === "cashed" ? "واصل" : h.s === "bounced" ? "برگشتی" : "در جریان") + "</span> " +
+        '<span class="hint">' + new Date(h.t).toLocaleString("fa-IR") + "</span>";
+    }).join("<br>");
+    $("#cheque-detail").innerHTML =
+      '<div class="card" style="box-shadow:none;margin:0 0 14px;border-style:dashed">' +
+        '<h2>جزئیات چک ' + esc(c.number) + (c.bank ? " — " + esc(c.bank) : "") + '</h2>' +
+        '<div class="grid2" style="margin-bottom:8px">' +
+          '<div class="hint">نوع: <b>' + (c.direction === "outgoing" ? "پرداختی (صادرشده)" : "دریافتی") + '</b></div>' +
+          '<div class="hint">مبلغ: <b class="num">' + money(c.amount) + ' ریال</b></div>' +
+          '<div class="hint">سررسید: <b>' + faDate(c.dueDate) + '</b> ' + statusBadge(c) + '</div>' +
+          '<div class="hint">شخص: <b>' + esc(personName(c.personId)) + '</b></div>' +
+          '<div class="hint">شناسه صیادی: <b class="mono">' + esc(c.sayad || "—") + '</b></div>' +
+        "</div>" +
+        (c.notes ? '<div class="hint">توضیحات: ' + esc(c.notes) + "</div>" : "") +
+        (hist ? '<div class="hint" style="margin-top:8px">تاریخچه وضعیت:<br>' + hist + "</div>" : '<div class="hint" style="margin-top:8px">هنوز تغییر وضعیتی ثبت نشده است.</div>') +
+        '<div class="actions"><button class="btn ghost sm" onclick="document.querySelector(\'#cheque-detail\').innerHTML=\'\'">بستن</button></div>' +
+      "</div>";
+    window.scrollTo({ top: $("#cheque-detail").offsetTop - 80, behavior: "smooth" });
   }
   function list() {
-    var rows = db.cheques.slice().sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+    var rows = filtered();
+    stats(rows);
     $("#cheque-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>شماره چک</th><th>مبلغ (ریال)</th><th>سررسید</th><th>وضعیت</th><th>شخص</th><th></th>" +
+      "<th>نوع</th><th>شماره چک</th><th>بانک</th><th>مبلغ (ریال)</th><th>سررسید</th><th>وضعیت</th><th>شخص</th><th></th>" +
       "</tr></thead><tbody>" + rows.map(function (c) {
-        return "<tr><td>" + esc(c.number) + "</td><td class='num'>" + money(c.amount) +
+        var overdue = c.status === "open" && daysTo(c.dueDate) !== null && daysTo(c.dueDate) < 0;
+        return "<tr" + (overdue ? ' style="background:var(--red-soft)"' : "") + "><td>" + dirBadge(c) +
+          "</td><td><b>" + esc(c.number) + "</b>" + (c.sayad ? '<br><span class="mono hint">صیادی ' + esc(c.sayad) + "</span>" : "") +
+          "</td><td>" + esc(c.bank || "—") +
+          "</td><td class='num'>" + money(c.amount) +
           "</td><td>" + faDate(c.dueDate) + "</td><td>" + statusBadge(c) + "</td><td>" + esc(personName(c.personId)) +
           "</td><td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+          "<button class='btn ghost sm' data-detail='" + c.id + "'>جزئیات</button>" +
           (c.status === "open"
             ? "<button class='btn ghost sm' data-cash='" + c.id + "'>واصل شد</button>" +
               "<button class='btn ghost sm' data-bounce='" + c.id + "'>برگشت</button>"
             : "<button class='btn ghost sm' data-reopen='" + c.id + "'>در جریان</button>") +
+          "<button class='btn icon sm blue' data-edit='" + c.id + "'>ویرایش</button>" +
           "<button class='btn icon sm' data-del='" + c.id + "'>حذف</button></div></td></tr>";
-      }).join("") + "</tbody></table></div>" : '<div class="empty">چکی ثبت نشده است.</div>';
+      }).join("") + "</tbody></table></div>" : '<div class="empty">چکی مطابق فیلترها پیدا نشد.</div>';
 
     $("#cheque-list").querySelectorAll("[data-del]").forEach(function (b) {
       b.onclick = function () {
         if (!confirm("آیا از حذف این چک مطمئن هستید؟")) return;
         db.cheques = db.cheques.filter(function (x) { return x.id !== b.dataset.del; });
-        save(); toast("چک حذف شد."); viewCheques();
+        if (editingCheque && editingCheque.id === b.dataset.del) resetForm();
+        save(); toast("چک حذف شد."); list();
       };
     });
     [["data-cash", "cashed", "چک واصل شد."], ["data-bounce", "bounced", "چک برگشتی ثبت شد."], ["data-reopen", "open", "چک به جریان بازگشت."]]
@@ -643,19 +747,98 @@ function viewCheques() {
           b.onclick = function () {
             var c = db.cheques.find(function (x) { return x.id === b.getAttribute(pair[0]); });
             if (!c) return;
-            c.status = pair[1]; save(); toast(pair[2]); viewCheques();
+            c.status = pair[1];
+            c.history = c.history || [];
+            c.history.push({ s: pair[1], t: new Date().toISOString() });
+            save(); toast(pair[2]); list();
           };
         });
       });
+    $("#cheque-list").querySelectorAll("[data-detail]").forEach(function (b) {
+      b.onclick = function () {
+        var c = db.cheques.find(function (x) { return x.id === b.dataset.detail; });
+        if (c) showDetail(c);
+      };
+    });
+    $("#cheque-list").querySelectorAll("[data-edit]").forEach(function (b) {
+      b.onclick = function () {
+        var c = db.cheques.find(function (x) { return x.id === b.dataset.edit; });
+        if (!c) return;
+        editingCheque = c;
+        $("#c-direction").value = c.direction;
+        $("#c-number").value = c.number || "";
+        $("#c-bank").value = c.bank || "";
+        $("#c-sayad").value = c.sayad || "";
+        $("#c-amount").value = Number(c.amount).toLocaleString("en-US").replace(/,/g, "٬");
+        $("#c-due").value = c.dueDate;
+        $("#c-person").value = c.personId || "";
+        $("#c-notes").value = c.notes || "";
+        $("#c-add").textContent = "بروزرسانی";
+        $("#c-cancel-wrap").style.display = "";
+        $("#c-form-title").textContent = "ویرایش چک";
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      };
+    });
   }
-
+  function resetForm() {
+    editingCheque = null;
+    $("#c-direction").value = "incoming";
+    $("#c-number").value = ""; $("#c-bank").value = ""; $("#c-sayad").value = "";
+    $("#c-amount").value = ""; $("#c-due").value = ""; $("#c-person").value = "";
+    $("#c-notes").value = "";
+    $("#c-add").textContent = "ثبت چک";
+    $("#c-cancel-wrap").style.display = "none";
+    $("#c-form-title").textContent = "افزودن چک جدید";
+  }
+  $("#c-cancel").onclick = resetForm;
   $("#c-add").onclick = function () {
     var number = $("#c-number").value.trim();
     var amount = readAmount($("#c-amount"));
     var due = $("#c-due").value;
+    var sayad = $("#c-sayad").value.trim();
     if (!number || !(amount > 0) || !due) { toast("شماره چک، مبلغ و سررسید را کامل وارد کنید."); return; }
-    db.cheques.push({ id: uid(), number: number, amount: amount, dueDate: due, personId: $("#c-person").value || null, status: "open" });
-    save(); toast("چک ثبت شد."); viewCheques();
+    if (sayad && sayad.length !== 16) { toast("شناسه صیادی باید ۱۶ رقم باشد (یا خالی بگذارید)."); return; }
+    if (editingCheque) {
+      editingCheque.direction = $("#c-direction").value;
+      editingCheque.number = number;
+      editingCheque.bank = $("#c-bank").value.trim();
+      editingCheque.sayad = sayad;
+      editingCheque.amount = amount;
+      editingCheque.dueDate = due;
+      editingCheque.personId = $("#c-person").value || null;
+      editingCheque.notes = $("#c-notes").value.trim();
+      save(); toast("چک بروزرسانی شد."); resetForm(); list();
+    } else {
+      db.cheques.push({
+        id: uid(), direction: $("#c-direction").value, number: number,
+        bank: $("#c-bank").value.trim(), sayad: sayad, amount: amount,
+        dueDate: due, personId: $("#c-person").value || null,
+        notes: $("#c-notes").value.trim(), status: "open", history: []
+      });
+      save(); toast("چک ثبت شد."); viewCheques();
+    }
+  };
+  ["#cf-q", "#cf-status", "#cf-dir", "#cf-person", "#cf-sort"].forEach(function (s) {
+    $(s).addEventListener("input", list);
+  });
+  $("#cf-csv").onclick = function () {
+    var rows = [["نوع", "شماره چک", "بانک", "شناسه صیادی", "مبلغ (ریال)", "سررسید", "وضعیت", "شخص", "توضیحات"]];
+    filtered().forEach(function (c) {
+      rows.push([
+        c.direction === "outgoing" ? "پرداختی" : "دریافتی", c.number, c.bank || "", c.sayad || "",
+        c.amount, c.dueDate,
+        c.status === "cashed" ? "واصل" : c.status === "bounced" ? "برگشتی" : "در جریان",
+        personName(c.personId), c.notes || ""
+      ]);
+    });
+    var csv = "\uFEFF" + rows.map(function (r) {
+      return r.map(function (c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(",");
+    }).join("\r\n");
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = "cheques.csv";
+    a.click();
+    toast("فایل CSV دانلود شد.");
   };
   list();
 }
