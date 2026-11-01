@@ -189,10 +189,11 @@ function defaultData() {
     },
     people: [],   // {id, name, role, phone, nationalId, address, notes}
     entries: [],  // {id, type:"income"|"expense", title, amount, date, personId, tracking}
-    cheques: [],  // {id, direction, number, bank, sayad, amount, dueDate, personId, notes, status, history}
-    payments: [], // {id, kind:"cash"|"transfer"|"card", amount, date, personId, accountId, notes}
     accounts: [], // {id, alias, bank, sheba, accNumber, card}
     invoices: [], // {id, number, tracking, personId, date, items:[{title, amount}], paid}
+    transactions: [], // {id, type:"cheque"|"cash"|"transfer"|"card", direction:"incoming"|"outgoing",
+                      //  amount, date, personId, accountId, notes,
+                      //  cheque fields: number, bank, sayad, dueDate, status, history}
     seq: 1000     // sequential invoice numbers
   };
 }
@@ -203,14 +204,40 @@ function load() {
     var d = JSON.parse(raw);
     var base = defaultData();
     for (var k in base) if (d[k] === undefined) d[k] = base[k];
-    d.cheques.forEach(function (c) {
-      if (!c.status) c.status = "open";
-      if (!c.direction) c.direction = "incoming";
-      if (!c.history) c.history = [];
-    });
     if (!d.accounts) d.accounts = [];
-    if (!d.payments) d.payments = [];
     if (d.profile && !d.profile.socials) d.profile.socials = { instagram: "", telegram: "", whatsapp: "", site: "" };
+
+    /* one-time migration: old db.cheques + db.payments -> db.transactions */
+    if (!d.transactions) {
+      d.transactions = [];
+      (d.cheques || []).forEach(function (c) {
+        d.transactions.push({
+          id: c.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+          type: "cheque",
+          direction: c.direction || "incoming",
+          amount: c.amount, date: c.dueDate || "",
+          personId: c.personId || null, accountId: null, notes: c.notes || "",
+          number: c.number, bank: c.bank || "", sayad: c.sayad || "",
+          dueDate: c.dueDate, status: c.status || "open", history: c.history || []
+        });
+      });
+      (d.payments || []).forEach(function (p) {
+        d.transactions.push({
+          id: p.id || (Date.now().toString(36) + Math.random().toString(36).slice(2, 7)),
+          type: p.kind || "cash",
+          direction: "incoming",
+          amount: p.amount, date: p.date,
+          personId: p.personId || null, accountId: p.accountId || null, notes: p.notes || "",
+          status: null, history: []
+        });
+      });
+      delete d.cheques;
+      delete d.payments;
+    }
+    d.transactions.forEach(function (t) {
+      if (t.type === "cheque" && !t.status) t.status = "open";
+      if (!t.history) t.history = [];
+    });
     return d;
   } catch (e) { return defaultData(); }
 }
@@ -476,8 +503,7 @@ var ROUTES = [
   ["dashboard", "داشبورد"],
   ["entries", "آیتم‌ها"],
   ["people", "کارمندان و کارفرما"],
-  ["cheques", "چک‌ها"],
-  ["payments", "پرداخت‌ها"],
+  ["transactions", "چک‌ها و پرداخت‌ها"],
   ["invoice", "فاکتور"],
   ["reports", "گزارش"],
   ["settings", "تنظیمات"]
@@ -500,11 +526,11 @@ function renderNav(active) {
 function render() {
   var r = route();
   if (r.indexOf("share/") === 0) { renderShare(decodeURIComponent(r.slice(6))); return; }
-  var known = ["dashboard", "entries", "people", "cheques", "payments", "invoice", "reports", "settings"];
+  var known = ["dashboard", "entries", "people", "transactions", "invoice", "reports", "settings"];
   if (known.indexOf(r) < 0) r = "dashboard";
   renderNav(r);
   ({ dashboard: viewDashboard, entries: viewEntries, people: viewPeople,
-     cheques: viewCheques, payments: viewPayments,
+     transactions: viewTransactions,
      invoice: viewInvoice, reports: viewReports, settings: viewSettings }[r])();
   window.scrollTo(0, 0);
 }
@@ -601,7 +627,7 @@ function viewDashboard() {
   var month = totals(db.entries.filter(function (e) { return isThisMonth(e.date); }));
   var recent = db.entries.slice().sort(function (a, b) { return b.date < a.date ? -1 : 1; }).slice(0, 8);
 
-  var openCheques = db.cheques.filter(function (c) { return c.status === "open"; });
+  var openCheques = chequeTxs().filter(function (c) { return c.status === "open"; });
   var soonCheques = openCheques.filter(function (c) {
     var d = daysTo(c.dueDate); return d !== null && d <= 14;
   }).sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; }).slice(0, 5);
@@ -611,11 +637,11 @@ function viewDashboard() {
     .reduce(function (s, c) { return s + Number(c.amount || 0); }, 0);
 
   var chSum = function (st) {
-    return db.cheques.filter(function (c) { return c.status === st; })
+    return chequeTxs().filter(function (c) { return c.status === st; })
       .reduce(function (s, c) { return s + Number(c.amount || 0); }, 0);
   };
   var chCount = function (st) {
-    return db.cheques.filter(function (c) { return c.status === st; }).length;
+    return chequeTxs().filter(function (c) { return c.status === st; }).length;
   };
 
   $("#view").innerHTML =
@@ -854,10 +880,10 @@ function viewPeople() {
     db.entries.forEach(function (e) {
       if (e.personId === p.id) { nE++; if (e.type === "income") inc += Number(e.amount); else exp += Number(e.amount); }
     });
-    var ch = db.cheques.filter(function (c) { return c.personId === p.id; });
+    var ch = chequeTxs().filter(function (c) { return c.personId === p.id; });
     var chOpen = ch.filter(function (c) { return c.status === "open"; })
       .reduce(function (s, c) { return s + Number(c.amount); }, 0);
-    var pm = db.payments.filter(function (x) { return x.personId === p.id; });
+    var pm = paymentTxs().filter(function (x) { return x.personId === p.id; });
     var pmSum = pm.reduce(function (s, x) { return s + Number(x.amount); }, 0);
     var inv = db.invoices.filter(function (i) { return i.personId === p.id; });
 
@@ -960,257 +986,354 @@ function viewPeople() {
   list();
 }
 
-/* ================= cheques ================= */
+/* ================= transactions (cheques + payments) ================= */
 var IRAN_BANKS = ["بانک ملی ایران", "بانک صادرات", "بانک ملت", "بانک تجارت", "بانک سپه",
   "بانک کشاورزی", "بانک رفاه", "بانک مسکن", "بانک پارسیان", "بانک پاسارگاد",
   "بانک سامان", "بانک آینده", "بانک شهر", "بانک رسالت", "بانک سینا",
   "بانک دی", "بانک گردشگری", "بانک کوثر", "بانک انصار", "بانک مهر ایران",
   "بانک اقتصاد نوین", "بانک کارآفرین", "بانک سرمایه"];
-var editingCheque = null;
+var TX_TYPES = { cheque: "چک", cash: "نقدی", transfer: "واریز به حساب", card: "کارت به کارت" };
+var editingTx = null;
 
-function statusBadge(c) {
-  if (c.status === "cashed") return '<span class="badge b-green">واصل</span>';
-  if (c.status === "bounced") return '<span class="badge b-red">برگشتی</span>';
-  var d = daysTo(c.dueDate);
+function chequeTxs() {
+  return db.transactions.filter(function (t) { return t.type === "cheque"; });
+}
+function paymentTxs() {
+  return db.transactions.filter(function (t) { return t.type !== "cheque"; });
+}
+function statusBadge(t) {
+  if (t.type !== "cheque") return "";
+  if (t.status === "cashed") return '<span class="badge b-green">واصل</span>';
+  if (t.status === "bounced") return '<span class="badge b-red">برگشتی</span>';
+  var d = daysTo(t.dueDate);
   if (d === null) return '<span class="badge b-gray">در جریان</span>';
   if (d < 0) return '<span class="badge b-red">' + money(-d) + ' روز گذشته</span>';
   if (d === 0) return '<span class="badge b-amber">امروز</span>';
   return '<span class="badge b-blue">' + money(d) + ' روز مانده</span>';
 }
-function dirBadge(c) {
-  return c.direction === "outgoing"
+function dirBadge(t) {
+  return t.direction === "outgoing"
     ? '<span class="badge b-red">پرداختی</span>'
     : '<span class="badge b-green">دریافتی</span>';
 }
+function typeBadgeTx(t) {
+  return '<span class="badge ' + (t.type === "cheque" ? "b-amber" : "b-blue") + '">' + TX_TYPES[t.type] + '</span>';
+}
+function accountLabel(id) {
+  for (var i = 0; i < db.accounts.length; i++) {
+    var a = db.accounts[i];
+    if (a.id === id) return (a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "");
+  }
+  return "—";
+}
+function accountOptions(sel) {
+  return db.accounts.map(function (a) {
+    return '<option value="' + a.id + '"' + (a.id === sel ? " selected" : "") + ">" +
+      esc((a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "")) + "</option>";
+  }).join("");
+}
 
-function viewCheques() {
-  editingCheque = null;
+function viewTransactions() {
+  editingTx = null;
   $("#view").innerHTML =
-    '<div id="cheque-stats" class="grid3" style="margin-bottom:16px"></div>' +
-    '<div class="card"><h2 id="c-form-title">افزودن چک جدید</h2>' +
+    '<div id="tx-stats" class="grid4" style="margin-bottom:16px"></div>' +
+    '<div class="card"><h2 id="tx-form-title">ثبت تراکنش جدید</h2>' +
       '<div class="row">' +
-        '<div><label>نوع چک</label><select id="c-direction"><option value="incoming">دریافتی (از دیگران)</option><option value="outgoing">پرداختی (صادرشده)</option></select></div>' +
-        '<div><label>شماره چک</label><input id="c-number" placeholder="مثلاً ۱۲۳۴۵۶"></div>' +
-        '<div><label>بانک</label><input id="c-bank" list="bank-list" placeholder="بانک…"><datalist id="bank-list">' +
-          IRAN_BANKS.map(function (b) { return '<option value="' + b + '">'; }).join("") + "</datalist></div>" +
+        '<div><label>نوع</label><select id="tx-type"><option value="cheque">چک</option><option value="cash">نقدی</option><option value="transfer">واریز به حساب بانکی</option><option value="card">کارت به کارت</option></select></div>' +
+        '<div><label>جهت</label><select id="tx-direction"><option value="incoming">دریافتی (از مشتری)</option><option value="outgoing">پرداختی (به دیگران)</option></select></div>' +
+        '<div><label>مبلغ (ریال)</label><input id="tx-amount" inputmode="numeric"></div>' +
+        '<div><label>تاریخ ثبت</label><input id="tx-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
+        '<div><label id="tx-person-label">از چه کسی</label><select id="tx-person"><option value="">—</option>' + personOptions() + "</select></div>" +
       "</div>" +
-      '<div class="row" style="margin-top:10px">' +
-        '<div><label>شناسه صیادی (۱۶ رقم)</label><input id="c-sayad" inputmode="numeric" maxlength="16" placeholder="اختیاری"></div>' +
-        '<div><label>مبلغ (ریال)</label><input id="c-amount" inputmode="numeric"></div>' +
-        '<div><label>تاریخ سررسید</label><input id="c-due" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
-        '<div><label>شخص (اختیاری)</label><select id="c-person"><option value="">—</option>' + personOptions() + "</select></div>" +
-        '<div class="fit"><button class="btn" id="c-add">ثبت چک</button></div>' +
-        '<div class="fit" id="c-cancel-wrap" style="display:none"><button class="btn ghost" id="c-cancel">انصراف</button></div>' +
+      '<div id="tx-cheque-fields">' +
+        '<div class="row" style="margin-top:10px">' +
+          '<div><label>شماره چک</label><input id="tx-number" placeholder="مثلاً ۱۲۳۴۵۶"></div>' +
+          '<div><label>بانک</label><input id="tx-bank" list="bank-list-t" placeholder="بانک…"><datalist id="bank-list-t">' +
+            IRAN_BANKS.map(function (b) { return '<option value="' + b + '">'; }).join("") + "</datalist></div>" +
+          '<div><label>شناسه صیادی (۱۶ رقم)</label><input id="tx-sayad" inputmode="numeric" maxlength="16" placeholder="اختیاری"></div>' +
+          '<div><label>تاریخ سررسید</label><input id="tx-due" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۹/۰۱"></div>' +
+        "</div>" +
       "</div>" +
-      '<div style="margin-top:10px"><label>توضیحات</label><input id="c-notes" placeholder="اختیاری — مثلاً بابت قرارداد شماره…"></div>' +
+      '<div class="row" id="tx-account-wrap" style="margin-top:10px;display:none">' +
+        '<div><label>حساب بانکی من</label><select id="tx-account"><option value="">—</option>' + accountOptions() + "</select></div>" +
+      "</div>" +
+      '<div style="margin-top:10px"><label>توضیحات (اختیاری)</label><input id="tx-notes" placeholder="مثلاً بابت قرارداد شماره…"></div>' +
+      '<div class="actions">' +
+        '<button class="btn" id="tx-add">ثبت</button>' +
+        '<button class="btn ghost" id="tx-cancel" style="display:none">انصراف</button>' +
+      "</div>" +
     "</div>" +
-    '<div class="card"><h2>چک‌ها</h2>' +
+    '<div class="card"><h2>چک‌ها و پرداخت‌ها</h2>' +
       '<div class="row" style="margin-bottom:10px">' +
-        '<div><label>سررسید از</label><input id="cf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
-        '<div><label>تا</label><input id="cf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۳۱"></div>' +
+        '<div><label>سررسید/ثبت از</label><input id="tf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
+        '<div><label>تا</label><input id="tf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
         '<div class="fit" style="display:flex;gap:6px">' +
-          '<button class="btn ghost sm" id="cf-month">این ماه</button>' +
-          '<button class="btn ghost sm" id="cf-clear-range">پاک کردن</button>' +
+          '<button class="btn ghost sm" id="tf-month">این ماه</button>' +
+          '<button class="btn ghost sm" id="tf-clear">پاک کردن</button>' +
         "</div>" +
       "</div>" +
       '<div class="row" style="margin-bottom:12px">' +
-        '<div><label>جستجو</label><input id="cf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
-        '<div><label>وضعیت</label><select id="cf-status"><option value="">همه</option><option value="open">در جریان</option><option value="cashed">واصل</option><option value="bounced">برگشتی</option></select></div>' +
-        '<div><label>نوع</label><select id="cf-dir"><option value="">همه</option><option value="incoming">دریافتی</option><option value="outgoing">پرداختی</option></select></div>' +
-        '<div><label>شخص</label><select id="cf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
-        '<div><label>ترتیب</label><select id="cf-sort"><option value="due">نزدیک‌ترین سررسید</option><option value="amount">بزرگ‌ترین مبلغ</option><option value="added">جدیدترین ثبت</option></select></div>' +
-        '<div class="fit"><button class="btn ghost sm" id="cf-csv">دانلود اکسل (CSV)</button></div>' +
+        '<div><label>جستجو</label><input id="tf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
+        '<div><label>نوع</label><select id="tf-type"><option value="">همه</option><option value="cheque">چک</option><option value="cash">نقدی</option><option value="transfer">واریز به حساب</option><option value="card">کارت به کارت</option></select></div>' +
+        '<div><label>جهت</label><select id="tf-dir"><option value="">همه</option><option value="incoming">دریافتی</option><option value="outgoing">پرداختی</option></select></div>' +
+        '<div><label>وضعیت چک</label><select id="tf-status"><option value="">همه</option><option value="open">در جریان</option><option value="cashed">واصل</option><option value="bounced">برگشتی</option></select></div>' +
+        '<div><label>شخص</label><select id="tf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
+        '<div><label>ترتیب</label><select id="tf-sort"><option value="due">نزدیک‌ترین تاریخ</option><option value="amount">بزرگ‌ترین مبلغ</option><option value="added">جدیدترین ثبت</option></select></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="tf-csv">دانلود اکسل (CSV)</button></div>' +
       "</div>" +
-      '<div id="cheque-detail"></div>' +
-      '<div id="cheque-list"></div>' +
+      '<div id="tx-detail"></div>' +
+      '<div id="tx-list"></div>' +
     "</div>";
 
-  bindAmountInput($("#c-amount"));
-  bindEnter(".card", "#c-add");
+  bindAmountInput($("#tx-amount"));
+  bindEnter(".card", "#tx-add");
+  setJalali("#tx-date", today());
+
+  function toggleFields() {
+    var isCheque = $("#tx-type").value === "cheque";
+    $("#tx-cheque-fields").style.display = isCheque ? "" : "none";
+    $("#tx-account-wrap").style.display = (!isCheque && $("#tx-type").value !== "cash") ? "" : "none";
+    $("#tx-person-label").textContent = $("#tx-direction").value === "outgoing" ? "به چه کسی" : "از چه کسی";
+  }
+  $("#tx-type").addEventListener("change", toggleFields);
+  $("#tx-direction").addEventListener("change", toggleFields);
 
   function filtered() {
-    var q = $("#cf-q").value.trim();
-    var st = $("#cf-status").value;
-    var dir = $("#cf-dir").value;
-    var person = $("#cf-person").value;
-    var sort = $("#cf-sort").value;
-    var from = readIso("#cf-from");
-    var to = readIso("#cf-to");
-    var rows = db.cheques.filter(function (c) {
-      if (st && c.status !== st) return false;
-      if (dir && c.direction !== dir) return false;
-      if (person && c.personId !== person) return false;
-      if (from && (c.dueDate || "") < from) return false;
-      if (to && (c.dueDate || "") > to) return false;
-      if (q && ((c.number || "") + " " + (c.bank || "") + " " + (c.sayad || "") + " " + (c.notes || "")).indexOf(q) < 0) return false;
+    var q = $("#tf-q").value.trim();
+    var type = $("#tf-type").value;
+    var dir = $("#tf-dir").value;
+    var st = $("#tf-status").value;
+    var person = $("#tf-person").value;
+    var sort = $("#tf-sort").value;
+    var from = readIso("#tf-from"), to = readIso("#tf-to");
+    var rows = db.transactions.filter(function (t) {
+      if (type && t.type !== type) return false;
+      if (dir && t.direction !== dir) return false;
+      if (st && (t.type !== "cheque" || t.status !== st)) return false;
+      if (person && t.personId !== person) return false;
+      var key = t.dueDate || t.date || "";
+      if (from && key < from) return false;
+      if (to && key > to) return false;
+      if (q && ((t.number || "") + " " + (t.bank || "") + " " + (t.sayad || "") + " " + (t.notes || "")).indexOf(q) < 0) return false;
       return true;
     });
     if (sort === "amount") rows.sort(function (a, b) { return b.amount - a.amount; });
     else if (sort === "added") rows.sort(function (a, b) { return a.id < b.id ? 1 : -1; });
-    else rows.sort(function (a, b) { return a.dueDate < b.dueDate ? -1 : 1; });
+    else rows.sort(function (a, b) { return (a.dueDate || a.date || "") < (b.dueDate || b.date || "") ? -1 : 1; });
     return rows;
   }
   function stats(list) {
-    var g = { open: { n: 0, sum: 0 }, cashed: { n: 0, sum: 0 }, bounced: { n: 0, sum: 0 } };
-    list.forEach(function (c) {
-      var s = g[c.status] || g.open;
-      s.n += 1; s.sum += Number(c.amount || 0);
+    var inc = 0, outg = 0, chOpen = { n: 0, sum: 0 }, payIn = 0;
+    list.forEach(function (t) {
+      if (t.direction === "outgoing") outg += Number(t.amount || 0);
+      else {
+        inc += Number(t.amount || 0);
+        if (t.type !== "cheque") payIn += Number(t.amount || 0);
+      }
+      if (t.type === "cheque" && t.status === "open") { chOpen.n += 1; chOpen.sum += Number(t.amount || 0); }
     });
-    $("#cheque-stats").innerHTML =
-      '<div class="stat balance"><div class="t">در جریان</div><div class="v">' + money(g.open.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.open.sum) + ' <span style="font-size:12px">ریال</span></div></div>' +
-      '<div class="stat income"><div class="t">واصل شده</div><div class="v">' + money(g.cashed.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.cashed.sum) + ' <span style="font-size:12px">ریال</span></div></div>' +
-      '<div class="stat expense"><div class="t">برگشتی</div><div class="v">' + money(g.bounced.n) + ' <span style="font-size:12px">چک</span> — ' + money(g.bounced.sum) + ' <span style="font-size:12px">ریال</span></div></div>';
+    $("#tx-stats").innerHTML =
+      '<div class="stat income"><div class="t">مجموع دریافتی</div><div class="v">' + money(inc) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat expense"><div class="t">مجموع پرداختی</div><div class="v">' + money(outg) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      '<div class="stat balance"><div class="t">چک در جریان</div><div class="v">' + money(chOpen.sum) + ' <span style="font-size:12px">(' + money(chOpen.n) + ' چک)</span></div></div>' +
+      '<div class="stat"><div class="t">نقدی/بانکی دریافتی</div><div class="v">' + money(payIn) + ' <span style="font-size:12px">ریال</span></div></div>';
   }
-  function showDetail(c) {
-    var hist = (c.history || []).map(function (h) {
+  function showDetail(t) {
+    var hist = (t.history || []).map(function (h) {
       return '<span class="badge ' + (h.s === "cashed" ? "b-green" : h.s === "bounced" ? "b-red" : "b-blue") + '">' +
         (h.s === "cashed" ? "واصل" : h.s === "bounced" ? "برگشتی" : "در جریان") + "</span> " +
         '<span class="hint">' + new Date(h.t).toLocaleString("fa-IR") + "</span>";
     }).join("<br>");
-    $("#cheque-detail").innerHTML =
+    $("#tx-detail").innerHTML =
       '<div class="card" style="box-shadow:none;margin:0 0 14px;border-style:dashed">' +
-        '<h2>جزئیات چک ' + esc(c.number) + (c.bank ? " — " + esc(c.bank) : "") + '</h2>' +
-        '<div class="grid2" style="margin-bottom:8px">' +
-          '<div class="hint">نوع: <b>' + (c.direction === "outgoing" ? "پرداختی (صادرشده)" : "دریافتی") + '</b></div>' +
-          '<div class="hint">مبلغ: <b class="num">' + money(c.amount) + ' ریال</b></div>' +
-          '<div class="hint">سررسید: <b>' + faDate(c.dueDate) + '</b> ' + statusBadge(c) + '</div>' +
-          '<div class="hint">شخص: <b>' + esc(personName(c.personId)) + '</b></div>' +
-          '<div class="hint">شناسه صیادی: <b class="mono">' + esc(c.sayad || "—") + '</b></div>' +
+        '<h2>جزئیات: ' + TX_TYPES[t.type] + " " + esc(t.number || "") + (t.bank ? " — " + esc(t.bank) : "") + '</h2>' +
+        '<div class="grid2">' +
+          '<div class="hint">جهت: <b>' + (t.direction === "outgoing" ? "پرداختی" : "دریافتی") + '</b></div>' +
+          '<div class="hint">مبلغ: <b class="num">' + money(t.amount) + ' ریال</b></div>' +
+          '<div class="hint">تاریخ ثبت: <b>' + faDate(t.date) + '</b></div>' +
+          (t.type === "cheque"
+            ? '<div class="hint">سررسید: <b>' + faDate(t.dueDate) + '</b> ' + statusBadge(t) + '</div>' +
+              '<div class="hint">شناسه صیادی: <b class="mono">' + esc(t.sayad || "—") + '</b></div>'
+            : '<div class="hint">حساب بانکی: <b>' + esc(t.accountId ? accountLabel(t.accountId) : "—") + '</b></div>') +
+          '<div class="hint">شخص: <b>' + esc(personName(t.personId)) + '</b></div>' +
         "</div>" +
-        (c.notes ? '<div class="hint">توضیحات: ' + esc(c.notes) + "</div>" : "") +
-        (hist ? '<div class="hint" style="margin-top:8px">تاریخچه وضعیت:<br>' + hist + "</div>" : '<div class="hint" style="margin-top:8px">هنوز تغییر وضعیتی ثبت نشده است.</div>') +
-        '<div class="actions"><button class="btn ghost sm" onclick="document.querySelector(\'#cheque-detail\').innerHTML=\'\'">بستن</button></div>' +
+        (t.notes ? '<div class="hint">توضیحات: ' + esc(t.notes) + "</div>" : "") +
+        (t.type === "cheque"
+          ? ((hist ? '<div class="hint" style="margin-top:8px">تاریخچه وضعیت:<br>' + hist + "</div>"
+              : '<div class="hint" style="margin-top:8px">هنوز تغییر وضعیتی ثبت نشده است.</div>'))
+          : "") +
+        '<div class="actions"><button class="btn ghost sm" data-close="tx-detail">بستن</button></div>' +
       "</div>";
-    window.scrollTo({ top: $("#cheque-detail").offsetTop - 80, behavior: "smooth" });
+    $("#tx-detail").querySelector("[data-close]").onclick = function () {
+      $("#tx-detail").innerHTML = "";
+    };
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
   function list() {
     var rows = filtered();
     stats(rows);
-    $("#cheque-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>نوع</th><th>شماره چک</th><th>بانک</th><th>مبلغ (ریال)</th><th>سررسید</th><th>وضعیت</th><th>شخص</th><th></th>" +
-      "</tr></thead><tbody>" + rows.map(function (c) {
-        var overdue = c.status === "open" && daysTo(c.dueDate) !== null && daysTo(c.dueDate) < 0;
-        return "<tr" + (overdue ? ' style="background:var(--red-soft)"' : "") + "><td>" + dirBadge(c) +
-          "</td><td><b>" + esc(c.number) + "</b>" + (c.sayad ? '<br><span class="mono hint">صیادی ' + esc(c.sayad) + "</span>" : "") +
-          "</td><td>" + esc(c.bank || "—") +
-          "</td><td class='num'>" + money(c.amount) +
-          "</td><td>" + faDate(c.dueDate) + "</td><td>" + statusBadge(c) + "</td><td>" + esc(personName(c.personId)) +
-          "</td><td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
-          "<button class='btn ghost sm' data-detail='" + c.id + "'>جزئیات</button>" +
-          (c.status === "open"
-            ? "<button class='btn ghost sm' data-cash='" + c.id + "'>واصل شد</button>" +
-              "<button class='btn ghost sm' data-bounce='" + c.id + "'>برگشت</button>"
-            : "<button class='btn ghost sm' data-reopen='" + c.id + "'>در جریان</button>") +
-          "<button class='btn icon sm blue' data-edit='" + c.id + "'>ویرایش</button>" +
-          "<button class='btn icon sm' data-del='" + c.id + "'>حذف</button></div></td></tr>";
-      }).join("") + "</tbody></table></div>" : '<div class="empty">چکی مطابق فیلترها پیدا نشد.</div>';
+    $("#tx-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>نوع</th><th>جهت</th><th>توضیح</th><th>مبلغ (ریال)</th><th>تاریخ</th><th>سررسید</th><th>وضعیت</th><th>شخص</th><th></th>" +
+      "</tr></thead><tbody>" + rows.map(function (t) {
+        var overdue = t.type === "cheque" && t.status === "open" && daysTo(t.dueDate) !== null && daysTo(t.dueDate) < 0;
+        var desc = t.type === "cheque"
+          ? "<b>" + esc(t.number || "چک") + "</b>" + (t.bank ? " <span class='hint'>(" + esc(t.bank) + ")</span>" : "") +
+            (t.sayad ? '<br><span class="mono hint">صیادی ' + esc(t.sayad) + "</span>" : "")
+          : esc(TX_TYPES[t.type]) + (t.accountId ? "<br><span class='hint'>" + esc(accountLabel(t.accountId)) + "</span>" : "");
+        return "<tr" + (overdue ? ' style="background:var(--red-soft)"' : "") + ">" +
+          "<td>" + typeBadgeTx(t) + "</td><td>" + dirBadge(t) + "</td><td>" + desc +
+          "</td><td class='num'>" + money(t.amount) +
+          "</td><td>" + faDate(t.date) +
+          "</td><td>" + (t.type === "cheque" ? faDate(t.dueDate) : "—") +
+          "</td><td>" + (t.type === "cheque" ? statusBadge(t) : '<span class="hint">—</span>') +
+          "</td><td>" + esc(personName(t.personId)) + "</td>" +
+          "<td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+          "<button class='btn ghost sm' data-detail='" + t.id + "'>جزئیات</button>" +
+          (t.type === "cheque"
+            ? (t.status === "open"
+              ? "<button class='btn ghost sm' data-cash='" + t.id + "'>واصل شد</button>" +
+                "<button class='btn ghost sm' data-bounce='" + t.id + "'>برگشت</button>"
+              : "<button class='btn ghost sm' data-reopen='" + t.id + "'>در جریان</button>")
+            : "") +
+          "<button class='btn icon sm blue' data-edit='" + t.id + "'>ویرایش</button>" +
+          "<button class='btn icon sm' data-del='" + t.id + "'>حذف</button></div></td></tr>";
+      }).join("") + "</tbody></table></div>" : '<div class="empty">چک یا پرداختی مطابق فیلترها پیدا نشد.</div>';
 
-    $("#cheque-list").querySelectorAll("[data-del]").forEach(function (b) {
+    $("#tx-list").querySelectorAll("[data-del]").forEach(function (b) {
       b.onclick = function () {
-        if (!confirm("آیا از حذف این چک مطمئن هستید؟")) return;
-        db.cheques = db.cheques.filter(function (x) { return x.id !== b.dataset.del; });
-        if (editingCheque && editingCheque.id === b.dataset.del) resetForm();
-        save(); toast("چک حذف شد."); list();
+        if (!confirm("آیا از حذف این مورد مطمئن هستید؟")) return;
+        db.transactions = db.transactions.filter(function (x) { return x.id !== b.dataset.del; });
+        if (editingTx && editingTx.id === b.dataset.del) resetForm();
+        save(); toast("حذف شد."); list();
       };
     });
     [["data-cash", "cashed", "چک واصل شد."], ["data-bounce", "bounced", "چک برگشتی ثبت شد."], ["data-reopen", "open", "چک به جریان بازگشت."]]
       .forEach(function (pair) {
-        $("#cheque-list").querySelectorAll("[" + pair[0] + "]").forEach(function (b) {
+        $("#tx-list").querySelectorAll("[" + pair[0] + "]").forEach(function (b) {
           b.onclick = function () {
-            var c = db.cheques.find(function (x) { return x.id === b.getAttribute(pair[0]); });
-            if (!c) return;
-            c.status = pair[1];
-            c.history = c.history || [];
-            c.history.push({ s: pair[1], t: new Date().toISOString() });
+            var t = db.transactions.find(function (x) { return x.id === b.getAttribute(pair[0]); });
+            if (!t) return;
+            t.status = pair[1];
+            t.history = t.history || [];
+            t.history.push({ s: pair[1], t: new Date().toISOString() });
             save(); toast(pair[2]); list();
           };
         });
       });
-    $("#cheque-list").querySelectorAll("[data-detail]").forEach(function (b) {
+    $("#tx-list").querySelectorAll("[data-detail]").forEach(function (b) {
       b.onclick = function () {
-        var c = db.cheques.find(function (x) { return x.id === b.dataset.detail; });
-        if (c) showDetail(c);
+        var t = db.transactions.find(function (x) { return x.id === b.dataset.detail; });
+        if (t) showDetail(t);
       };
     });
-    $("#cheque-list").querySelectorAll("[data-edit]").forEach(function (b) {
+    $("#tx-list").querySelectorAll("[data-edit]").forEach(function (b) {
       b.onclick = function () {
-        var c = db.cheques.find(function (x) { return x.id === b.dataset.edit; });
-        if (!c) return;
-        editingCheque = c;
-        $("#c-direction").value = c.direction;
-        $("#c-number").value = c.number || "";
-        $("#c-bank").value = c.bank || "";
-        $("#c-sayad").value = c.sayad || "";
-        $("#c-amount").value = Number(c.amount).toLocaleString("en-US").replace(/,/g, "٬");
-        setJalali("#c-due", c.dueDate);
-        $("#c-person").value = c.personId || "";
-        $("#c-notes").value = c.notes || "";
-        $("#c-add").textContent = "بروزرسانی";
-        $("#c-cancel-wrap").style.display = "";
-        $("#c-form-title").textContent = "ویرایش چک";
+        var t = db.transactions.find(function (x) { return x.id === b.dataset.edit; });
+        if (!t) return;
+        editingTx = t;
+        $("#tx-type").value = t.type;
+        $("#tx-direction").value = t.direction;
+        $("#tx-amount").value = Number(t.amount).toLocaleString("en-US").replace(/,/g, "٬");
+        setJalali("#tx-date", t.date);
+        $("#tx-person").value = t.personId || "";
+        toggleFields();
+        if (t.type === "cheque") {
+          $("#tx-number").value = t.number || "";
+          $("#tx-bank").value = t.bank || "";
+          $("#tx-sayad").value = t.sayad || "";
+          setJalali("#tx-due", t.dueDate);
+        } else {
+          $("#tx-account").value = t.accountId || "";
+        }
+        $("#tx-notes").value = t.notes || "";
+        $("#tx-add").textContent = "بروزرسانی";
+        $("#tx-cancel").style.display = "";
+        $("#tx-form-title").textContent = "ویرایش تراکنش";
         window.scrollTo({ top: 0, behavior: "smooth" });
       };
     });
   }
   function resetForm() {
-    editingCheque = null;
-    $("#c-direction").value = "incoming";
-    $("#c-number").value = ""; $("#c-bank").value = ""; $("#c-sayad").value = "";
-    $("#c-amount").value = ""; setJalali("#c-due", ""); $("#c-person").value = "";
-    $("#c-notes").value = "";
-    $("#c-add").textContent = "ثبت چک";
-    $("#c-cancel-wrap").style.display = "none";
-    $("#c-form-title").textContent = "افزودن چک جدید";
+    editingTx = null;
+    $("#tx-type").value = "cheque";
+    $("#tx-direction").value = "incoming";
+    $("#tx-amount").value = "";
+    setJalali("#tx-date", today());
+    $("#tx-person").value = "";
+    $("#tx-number").value = ""; $("#tx-bank").value = ""; $("#tx-sayad").value = "";
+    setJalali("#tx-due", "");
+    $("#tx-account").value = "";
+    $("#tx-notes").value = "";
+    toggleFields();
+    $("#tx-add").textContent = "ثبت";
+    $("#tx-cancel").style.display = "none";
+    $("#tx-form-title").textContent = "ثبت تراکنش جدید";
   }
-  $("#c-cancel").onclick = resetForm;
-  $("#c-add").onclick = function () {
-    var number = $("#c-number").value.trim();
-    var amount = readAmount($("#c-amount"));
-    var due = readIso("#c-due");
-    var sayad = $("#c-sayad").value.trim();
-    if (!number || !(amount > 0) || !due) { toast("شماره چک، مبلغ و سررسید را کامل وارد کنید."); return; }
-    if (sayad && sayad.length !== 16) { toast("شناسه صیادی باید ۱۶ رقم باشد (یا خالی بگذارید)."); return; }
-    if (editingCheque) {
-      editingCheque.direction = $("#c-direction").value;
-      editingCheque.number = number;
-      editingCheque.bank = $("#c-bank").value.trim();
-      editingCheque.sayad = sayad;
-      editingCheque.amount = amount;
-      editingCheque.dueDate = due;
-      editingCheque.personId = $("#c-person").value || null;
-      editingCheque.notes = $("#c-notes").value.trim();
-      save(); toast("چک بروزرسانی شد."); resetForm(); list();
+  $("#tx-cancel").onclick = resetForm;
+  $("#tx-add").onclick = function () {
+    var amount = readAmount($("#tx-amount"));
+    var date = readIso("#tx-date") || today();
+    var type = $("#tx-type").value;
+    var direction = $("#tx-direction").value;
+    if (!(amount > 0)) { toast("لطفاً مبلغ معتبر وارد کنید."); return; }
+    var tx = {
+      type: type, direction: direction, amount: amount, date: date,
+      personId: $("#tx-person").value || null, accountId: null,
+      notes: $("#tx-notes").value.trim(), status: null, history: []
+    };
+    if (type === "cheque") {
+      var number = $("#tx-number").value.trim();
+      var due = readIso("#tx-due");
+      var sayad = $("#tx-sayad").value.trim();
+      if (!number || !due) { toast("شماره چک و تاریخ سررسید را وارد کنید."); return; }
+      if (sayad && sayad.length !== 16) { toast("شناسه صیادی باید ۱۶ رقم باشد (یا خالی بگذارید)."); return; }
+      tx.number = number; tx.bank = $("#tx-bank").value.trim();
+      tx.sayad = sayad; tx.dueDate = due; tx.status = "open";
     } else {
-      db.cheques.push({
-        id: uid(), direction: $("#c-direction").value, number: number,
-        bank: $("#c-bank").value.trim(), sayad: sayad, amount: amount,
-        dueDate: due, personId: $("#c-person").value || null,
-        notes: $("#c-notes").value.trim(), status: "open", history: []
-      });
-      save(); toast("چک ثبت شد."); viewCheques();
+      if (type !== "cash") tx.accountId = $("#tx-account").value || null;
+    }
+    if (editingTx) {
+      editingTx.type = tx.type; editingTx.direction = tx.direction;
+      editingTx.amount = tx.amount; editingTx.date = tx.date;
+      editingTx.personId = tx.personId; editingTx.accountId = tx.accountId;
+      editingTx.notes = tx.notes;
+      if (type === "cheque") {
+        editingTx.number = tx.number; editingTx.bank = tx.bank;
+        editingTx.sayad = tx.sayad; editingTx.dueDate = tx.dueDate;
+        if (!editingTx.status) editingTx.status = "open";
+      }
+      save(); toast("تراکنش بروزرسانی شد."); resetForm(); list();
+    } else {
+      tx.id = uid();
+      db.transactions.push(tx);
+      save(); toast("ثبت شد."); viewTransactions();
     }
   };
-  ["#cf-q", "#cf-status", "#cf-dir", "#cf-person", "#cf-sort", "#cf-from", "#cf-to"].forEach(function (s) {
+  ["#tf-q", "#tf-type", "#tf-dir", "#tf-status", "#tf-person", "#tf-sort", "#tf-from", "#tf-to"].forEach(function (s) {
     $(s).addEventListener("input", list);
   });
-  $("#cf-month").onclick = function () {
+  $("#tf-month").onclick = function () {
     var p = today().split("-");
     var j = g2j(+p[0], +p[1], +p[2]);
     var a = j2g(j[0], j[1], 1), b = j2g(j[0], j[1], jMonthLen(j[0], j[1]));
-    setJalaliFromIso($("#cf-from"), isoOf(new Date(a[0], a[1] - 1, a[2])));
-    setJalaliFromIso($("#cf-to"), isoOf(new Date(b[0], b[1] - 1, b[2])));
+    setJalaliFromIso($("#tf-from"), isoOf(new Date(a[0], a[1] - 1, a[2])));
+    setJalaliFromIso($("#tf-to"), isoOf(new Date(b[0], b[1] - 1, b[2])));
   };
-  $("#cf-clear-range").onclick = function () {
-    setJalali("#cf-from", ""); setJalali("#cf-to", ""); list();
+  $("#tf-clear").onclick = function () {
+    setJalali("#tf-from", ""); setJalali("#tf-to", ""); list();
   };
-  $("#cf-csv").onclick = function () {
-    var rows = [["نوع", "شماره چک", "بانک", "شناسه صیادی", "مبلغ (ریال)", "سررسید", "وضعیت", "شخص", "توضیحات"]];
-    filtered().forEach(function (c) {
+  $("#tf-csv").onclick = function () {
+    var rows = [["نوع", "جهت", "شماره چک/روش", "بانک", "صیادی", "مبلغ (ریال)", "تاریخ ثبت", "سررسید", "وضعیت", "شخص", "حساب", "توضیحات"]];
+    filtered().forEach(function (t) {
       rows.push([
-        c.direction === "outgoing" ? "پرداختی" : "دریافتی", c.number, c.bank || "", c.sayad || "",
-        c.amount, c.dueDate,
-        c.status === "cashed" ? "واصل" : c.status === "bounced" ? "برگشتی" : "در جریان",
-        personName(c.personId), c.notes || ""
+        TX_TYPES[t.type], t.direction === "outgoing" ? "پرداختی" : "دریافتی",
+        t.type === "cheque" ? (t.number || "") : TX_TYPES[t.type],
+        t.bank || "", t.sayad || "", t.amount, t.date || "",
+        t.dueDate || "",
+        t.type === "cheque" ? (t.status === "cashed" ? "واصل" : t.status === "bounced" ? "برگشتی" : "در جریان") : "",
+        personName(t.personId),
+        t.accountId ? accountLabel(t.accountId) : "",
+        t.notes || ""
       ]);
     });
     var csv = "\uFEFF" + rows.map(function (r) {
@@ -1218,187 +1341,7 @@ function viewCheques() {
     }).join("\r\n");
     var a = document.createElement("a");
     a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = "cheques.csv";
-    a.click();
-    toast("فایل CSV دانلود شد.");
-  };
-  list();
-  bindJalaliInputs();
-}
-
-/* ================= payments (cash / bank transfer) ================= */
-var PM_KINDS = { cash: "نقدی", transfer: "واریز به حساب", card: "کارت به کارت" };
-var editingPayment = null;
-function accountOptions(sel) {
-  return db.accounts.map(function (a) {
-    return '<option value="' + a.id + '"' + (a.id === sel ? " selected" : "") + ">" +
-      esc((a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "")) + "</option>";
-  }).join("");
-}
-function viewPayments() {
-  editingPayment = null;
-  $("#view").innerHTML =
-    '<div id="pm-stats" class="grid3" style="margin-bottom:16px"></div>' +
-    '<div class="card"><h2 id="pm-form-title">ثبت پرداخت جدید</h2>' +
-      '<div class="row">' +
-        '<div><label>روش پرداخت</label><select id="pm-kind"><option value="cash">نقدی</option><option value="transfer">واریز به حساب بانکی</option><option value="card">کارت به کارت</option></select></div>' +
-        '<div><label>مبلغ (ریال)</label><input id="pm-amount" inputmode="numeric"></div>' +
-        '<div><label>تاریخ</label><input id="pm-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
-        '<div><label>شخص (پرداخت‌کننده)</label><select id="pm-person"><option value="">—</option>' + personOptions() + "</select></div>" +
-        '<div id="pm-account-wrap"><label>حساب بانکی من</label><select id="pm-account"><option value="">—</option>' + accountOptions() + "</select></div>" +
-        '<div class="fit"><button class="btn" id="pm-add">ثبت</button></div>' +
-        '<div class="fit" id="pm-cancel-wrap" style="display:none"><button class="btn ghost" id="pm-cancel">انصراف</button></div>' +
-      "</div>" +
-      '<div style="margin-top:10px"><label>توضیحات (اختیاری)</label><input id="pm-notes" placeholder="مثلاً بابت مرحله دوم پروژه…"></div>' +
-    "</div>" +
-    '<div class="card"><h2>پرداخت‌های نقدی و بانکی</h2>' +
-      '<div class="row" style="margin-bottom:12px">' +
-        '<div><label>جستجو</label><input id="pf-q" placeholder="توضیحات…"></div>' +
-        '<div><label>روش</label><select id="pf-kind"><option value="">همه</option><option value="cash">نقدی</option><option value="transfer">واریز به حساب</option><option value="card">کارت به کارت</option></select></div>' +
-        '<div><label>شخص</label><select id="pf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
-        '<div><label>از تاریخ</label><input id="pf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
-        '<div><label>تا</label><input id="pf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
-        '<div class="fit"><button class="btn ghost sm" id="pf-csv">دانلود اکسل (CSV)</button></div>' +
-      "</div>" +
-      '<div id="payment-list"></div>' +
-    "</div>";
-
-  bindAmountInput($("#pm-amount"));
-  bindEnter(".card", "#pm-add");
-  setJalali("#pm-date", today());
-
-  $("#pm-kind").addEventListener("change", function () {
-    $("#pm-account-wrap").style.display = $("#pm-kind").value === "cash" ? "none" : "";
-  });
-
-  function filtered() {
-    var q = $("#pf-q").value.trim();
-    var kind = $("#pf-kind").value;
-    var person = $("#pf-person").value;
-    var from = readIso("#pf-from");
-    var to = readIso("#pf-to");
-    return db.payments.filter(function (x) {
-      if (kind && x.kind !== kind) return false;
-      if (person && x.personId !== person) return false;
-      if (from && (x.date || "") < from) return false;
-      if (to && (x.date || "") > to) return false;
-      if (q && (x.notes || "").indexOf(q) < 0) return false;
-      return true;
-    }).sort(function (a, b) { return b.date < a.date ? -1 : 1; });
-  }
-  function accountLabel(id) {
-    for (var i = 0; i < db.accounts.length; i++) {
-      var a = db.accounts[i];
-      if (a.id === id) return (a.alias || a.bank || "حساب") + (a.bank ? " — " + a.bank : "");
-    }
-    return "—";
-  }
-  function kindBadge(k) {
-    return k === "cash" ? '<span class="badge b-green">نقدی</span>'
-      : k === "transfer" ? '<span class="badge b-blue">واریز به حساب</span>'
-      : '<span class="badge b-amber">کارت به کارت</span>';
-  }
-  function stats(list) {
-    var g = { cash: 0, transfer: 0, card: 0 };
-    list.forEach(function (x) { g[x.kind] = (g[x.kind] || 0) + Number(x.amount || 0); });
-    $("#pm-stats").innerHTML =
-      '<div class="stat income"><div class="t">جمع نقدی</div><div class="v">' + money(g.cash) + ' <span style="font-size:12px">ریال</span></div></div>' +
-      '<div class="stat balance"><div class="t">جمع واریز به حساب</div><div class="v">' + money(g.transfer) + ' <span style="font-size:12px">ریال</span></div></div>' +
-      '<div class="stat expense"><div class="t">جمع کارت به کارت</div><div class="v">' + money(g.card) + ' <span style="font-size:12px">ریال</span></div></div>';
-  }
-  function list() {
-    var rows = filtered();
-    stats(rows);
-    $("#payment-list").innerHTML = rows.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>روش</th><th>مبلغ (ریال)</th><th>تاریخ</th><th>شخص</th><th>حساب</th><th>توضیحات</th><th></th>" +
-      "</tr></thead><tbody>" + rows.map(function (x) {
-        return "<tr><td>" + kindBadge(x.kind) + "</td><td class='num'>" + money(x.amount) +
-          "</td><td>" + faDate(x.date) + "</td><td>" + esc(personName(x.personId)) +
-          "</td><td>" + esc(x.kind === "cash" ? "—" : accountLabel(x.accountId)) +
-          "</td><td>" + esc(x.notes || "—") + "</td>" +
-          "<td><div style='display:flex;gap:6px'>" +
-          "<button class='btn icon sm blue' data-edit='" + x.id + "'>ویرایش</button>" +
-          "<button class='btn icon sm' data-del='" + x.id + "'>حذف</button></div></td></tr>";
-      }).join("") + "</tbody></table></div>"
-      : '<div class="empty">پرداختی ثبت نشده است.</div>';
-
-    $("#payment-list").querySelectorAll("[data-del]").forEach(function (b) {
-      b.onclick = function () {
-        if (!confirm("آیا از حذف این پرداخت مطمئن هستید؟")) return;
-        db.payments = db.payments.filter(function (x) { return x.id !== b.dataset.del; });
-        if (editingPayment && editingPayment.id === b.dataset.del) resetForm();
-        save(); toast("پرداخت حذف شد."); list();
-      };
-    });
-    $("#payment-list").querySelectorAll("[data-edit]").forEach(function (b) {
-      b.onclick = function () {
-        var x = db.payments.find(function (y) { return y.id === b.dataset.edit; });
-        if (!x) return;
-        editingPayment = x;
-        $("#pm-kind").value = x.kind;
-        $("#pm-kind").dispatchEvent(new Event("change"));
-        $("#pm-amount").value = Number(x.amount).toLocaleString("en-US").replace(/,/g, "٬");
-        setJalali("#pm-date", x.date);
-        $("#pm-person").value = x.personId || "";
-        $("#pm-account").value = x.accountId || "";
-        $("#pm-notes").value = x.notes || "";
-        $("#pm-add").textContent = "بروزرسانی";
-        $("#pm-cancel-wrap").style.display = "";
-        $("#pm-form-title").textContent = "ویرایش پرداخت";
-        window.scrollTo({ top: 0, behavior: "smooth" });
-      };
-    });
-  }
-  function resetForm() {
-    editingPayment = null;
-    $("#pm-kind").value = "cash";
-    $("#pm-kind").dispatchEvent(new Event("change"));
-    $("#pm-amount").value = "";
-    setJalali("#pm-date", today());
-    $("#pm-person").value = ""; $("#pm-account").value = ""; $("#pm-notes").value = "";
-    $("#pm-add").textContent = "ثبت";
-    $("#pm-cancel-wrap").style.display = "none";
-    $("#pm-form-title").textContent = "ثبت پرداخت جدید";
-  }
-  $("#pm-cancel").onclick = resetForm;
-  $("#pm-add").onclick = function () {
-    var amount = readAmount($("#pm-amount"));
-    var date = readIso("#pm-date") || today();
-    if (!(amount > 0)) { toast("لطفاً مبلغ معتبر وارد کنید."); return; }
-    var kind = $("#pm-kind").value;
-    if (editingPayment) {
-      editingPayment.kind = kind;
-      editingPayment.amount = amount;
-      editingPayment.date = date;
-      editingPayment.personId = $("#pm-person").value || null;
-      editingPayment.accountId = kind === "cash" ? null : ($("#pm-account").value || null);
-      editingPayment.notes = $("#pm-notes").value.trim();
-      save(); toast("پرداخت بروزرسانی شد."); resetForm(); list();
-    } else {
-      db.payments.push({
-        id: uid(), kind: kind, amount: amount, date: date,
-        personId: $("#pm-person").value || null,
-        accountId: kind === "cash" ? null : ($("#pm-account").value || null),
-        notes: $("#pm-notes").value.trim()
-      });
-      save(); toast("پرداخت ثبت شد."); viewPayments();
-    }
-  };
-  ["#pf-q", "#pf-kind", "#pf-person", "#pf-from", "#pf-to"].forEach(function (s) {
-    $(s).addEventListener("input", list);
-  });
-  $("#pf-csv").onclick = function () {
-    var rows = [["روش", "مبلغ (ریال)", "تاریخ", "شخص", "حساب", "توضیحات"]];
-    filtered().forEach(function (x) {
-      rows.push([PM_KINDS[x.kind], x.amount, x.date, personName(x.personId),
-        x.kind === "cash" ? "" : accountLabel(x.accountId), x.notes || ""]);
-    });
-    var csv = "\uFEFF" + rows.map(function (r) {
-      return r.map(function (c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(",");
-    }).join("\r\n");
-    var a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    a.download = "payments.csv";
+    a.download = "transactions.csv";
     a.click();
     toast("فایل CSV دانلود شد.");
   };
@@ -1643,10 +1586,10 @@ function viewReports() {
     var entries = db.entries.filter(function (e) {
       return inR(e.date) && (!person || e.personId === person);
     });
-    var cheques = db.cheques.filter(function (c) {
+    var cheques = chequeTxs().filter(function (c) {
       return inR(c.dueDate) && (!person || c.personId === person);
     });
-    var payments = db.payments.filter(function (x) {
+    var payments = paymentTxs().filter(function (x) {
       return inR(x.date) && (!person || x.personId === person);
     });
     var invoices = db.invoices.filter(function (i) {
@@ -1658,8 +1601,11 @@ function viewReports() {
   function renderBody() {
     var d = compute();
     var t = totals(d.entries);
-    var paySum = d.payments.reduce(function (s, x) { return s + Number(x.amount || 0); }, 0);
-    var payCash = d.payments.filter(function (x) { return x.kind === "cash"; })
+    var payIn = d.payments.filter(function (x) { return x.direction !== "outgoing"; });
+    var paySum = payIn.reduce(function (s, x) { return s + Number(x.amount || 0); }, 0);
+    var payCash = payIn.filter(function (x) { return x.type === "cash"; })
+      .reduce(function (s, x) { return s + Number(x.amount || 0); }, 0);
+    var payOut = d.payments.filter(function (x) { return x.direction === "outgoing"; })
       .reduce(function (s, x) { return s + Number(x.amount || 0); }, 0);
     var chCashed = d.cheques.filter(function (c) { return c.status === "cashed"; })
       .reduce(function (s, c) { return s + Number(c.amount || 0); }, 0);
@@ -1698,7 +1644,8 @@ function viewReports() {
       '<div class="card"><h2>گردش حساب دوره</h2>' +
         '<div class="row" style="align-items:center">' +
           '<div><span class="badge b-green">چک واصل‌شده</span> <b class="num">' + money(chCashed) + '</b></div>' +
-          '<div><span class="badge b-blue">پرداخت نقدی/بانکی</span> <b class="num">' + money(paySum) + '</b> <span class="hint">(نقدی: ' + money(payCash) + ')</span></div>' +
+          '<div><span class="badge b-blue">دریافت نقدی/بانکی</span> <b class="num">' + money(paySum) + '</b> <span class="hint">(نقدی: ' + money(payCash) + ')</span></div>' +
+          '<div><span class="badge b-red">پرداخت نقدی/بانکی</span> <b class="num">' + money(payOut) + '</b></div>' +
           '<div><span class="badge b-amber">چک‌های سررسیدشده</span> <b class="num">' + money(d.cheques.length) + '</b></div>' +
         "</div>" +
       "</div>" +
