@@ -194,6 +194,7 @@ function defaultData() {
     transactions: [], // {id, type:"cheque"|"cash"|"transfer"|"card", direction:"incoming"|"outgoing",
                       //  amount, date, personId, accountId, notes,
                       //  cheque fields: number, bank, sayad, dueDate, status, history}
+    supervisionPercent: 12, // default مبلغ نظارت percent for new invoices (per-invoice override allowed)
     seq: 1000     // sequential invoice numbers
   };
 }
@@ -529,6 +530,7 @@ function render() {
   var known = ["dashboard", "entries", "people", "transactions", "invoice", "reports", "settings"];
   if (known.indexOf(r) < 0) r = "dashboard";
   renderNav(r);
+  if (r !== "invoice") editingInvoiceId = null;
   ({ dashboard: viewDashboard, entries: viewEntries, people: viewPeople,
      transactions: viewTransactions,
      invoice: viewInvoice, reports: viewReports, settings: viewSettings }[r])();
@@ -1351,13 +1353,16 @@ function viewTransactions() {
 
 /* ================= invoices ================= */
 var draftItems = [];
+var editingInvoiceId = null;
+function faPercent(n) { return String(Number(n) || 0).replace(/\d/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹"[d]; }); }
 function viewInvoice() {
   draftItems = draftItems.length ? draftItems : [];
   $("#view").innerHTML =
-    '<div class="card"><h2>ساخت فاکتور جدید</h2>' +
+    '<div class="card"><h2>' + (editingInvoiceId ? "ویرایش فاکتور" : "ساخت فاکتور جدید") + '</h2>' +
       '<div class="row">' +
         '<div><label>برای چه کسی</label><select id="i-person">' + personOptions() + "</select></div>" +
         '<div><label>تاریخ</label><input id="i-date" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۹"></div>' +
+        '<div><label>درصد نظارت (مبلغ نظارت)</label><input id="i-sup" inputmode="numeric" placeholder="مثلاً 12" value="' + esc(Number(db.supervisionPercent) || 0) + '"></div>' +
       "</div>" +
       '<div class="row" style="margin-top:12px">' +
         '<div><label>عنوان آیتم</label><input id="i-title" placeholder="نام آیتم"></div>' +
@@ -1375,17 +1380,36 @@ function viewInvoice() {
   bindEnter(".card", "#i-additem");
   setJalali("#i-date", today());
 
+  function readSupPercent() {
+    var v = Number(digitsOnly($("#i-sup").value));
+    return (v > 0) ? Math.min(100, v) : 0;
+  }
   function renderDraft() {
     var sum = draftItems.reduce(function (s, i) { return s + i.amount; }, 0);
+    var sp = readSupPercent();
+    var supAmt = Math.round(sum * sp / 100);
     $("#draft-list").innerHTML = draftItems.length ? '<div class="tblwrap"><table><tbody>' +
       draftItems.map(function (i, idx) {
         return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) +
-          "</td><td><button class='btn icon sm' data-rm='" + idx + "'>حذف</button></td></tr>";
+          "</td><td style='display:flex;gap:6px'><button class='btn ghost sm' data-ed='" + idx + "'>ویرایش</button>" +
+          "<button class='btn icon sm' data-rm='" + idx + "'>حذف</button></td></tr>";
       }).join("") +
-      "<tr><td><b>جمع</b></td><td class='num'>" + money(sum) + "</td><td></td></tr></tbody></table></div>"
+      "<tr><td><b>جمع آیتم‌ها</b></td><td class='num'>" + money(sum) + "</td><td></td></tr>" +
+      (sp > 0 ? "<tr><td><b>مبلغ نظارت (" + faPercent(sp) + "٪ از خرج کرد)</b></td><td class='num'>" + money(supAmt) + "</td><td></td></tr>" +
+        "<tr><td><b style='color:var(--accent)'>مبلغ قابل پرداخت</b></td><td class='num' style='font-size:16px;font-weight:800'>" +
+        money(sum + supAmt) + "</td><td></td></tr>" : "") +
+      "</tbody></table></div>"
       : '<div class="hint">هنوز آیتمی به این فاکتور اضافه نشده است.</div>';
     $("#draft-list").querySelectorAll("[data-rm]").forEach(function (b) {
       b.onclick = function () { draftItems.splice(Number(b.dataset.rm), 1); renderDraft(); };
+    });
+    $("#draft-list").querySelectorAll("[data-ed]").forEach(function (b) {
+      b.onclick = function () {
+        var it = draftItems.splice(Number(b.dataset.ed), 1)[0];
+        $("#i-title").value = it.title;
+        $("#i-amount").value = it.amount ? Number(it.amount).toLocaleString("en-US").replace(/,/g, "٬") : "";
+        renderDraft(); $("#i-title").focus();
+      };
     });
   }
   renderDraft();
@@ -1398,12 +1422,29 @@ function viewInvoice() {
     $("#i-title").value = ""; $("#i-amount").value = "";
     renderDraft();
   };
+  $("#i-sup").addEventListener("input", renderDraft);
   $("#i-save").onclick = function () {
     if (!draftItems.length) { toast("حداقل یک آیتم به فاکتور اضافه کنید."); return; }
+    var sp = readSupPercent();
+    if (editingInvoiceId) {
+      var v = db.invoices.find(function (x) { return x.id === editingInvoiceId; });
+      if (v) {
+        v.personId = $("#i-person").value || null;
+        v.date = readIso("#i-date") || v.date || today();
+        v.items = draftItems.slice();
+        v.supervisionPercent = sp;
+        save();
+        toast("فاکتور " + (v.number ? money(v.number) : "") + " ویرایش شد.");
+      }
+      editingInvoiceId = null; draftItems = [];
+      viewInvoice();
+      return;
+    }
     db.seq += 1;
     var inv = {
       id: uid(), number: db.seq, tracking: tracking(), personId: $("#i-person").value || null,
-      date: readIso("#i-date") || today(), items: draftItems.slice(), paid: false
+      date: readIso("#i-date") || today(), items: draftItems.slice(), paid: false,
+      supervisionPercent: sp
     };
     db.invoices.unshift(inv);
     draftItems = [];
@@ -1411,6 +1452,18 @@ function viewInvoice() {
     toast("فاکتور " + inv.number + " ذخیره شد. کد پیگیری: " + inv.tracking);
     viewInvoice();
   };
+  function startEditInvoice(id) {
+    var v = db.invoices.find(function (x) { return x.id === id; });
+    if (!v) return;
+    draftItems = v.items.map(function (i) { return { title: i.title, amount: Number(i.amount || 0) }; });
+    editingInvoiceId = id;
+    viewInvoice();
+    $("#i-person").value = v.personId || "";
+    $("#i-sup").value = v.supervisionPercent != null ? String(v.supervisionPercent) : "";
+    setJalali("#i-date", v.date || today());
+    renderDraft();
+    window.scrollTo(0, 0);
+  }
 
   var list = $("#inv-list");
   list.innerHTML = db.invoices.length ? '<div class="tblwrap"><table><thead><tr>' +
@@ -1423,12 +1476,16 @@ function viewInvoice() {
         "</td><td>" + faDate(v.date) + "</td><td class='num'>" + money(sum) + "</td><td>" +
         (v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') +
         "</td><td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+        "<button class='btn ghost sm' data-editinv='" + v.id + "'>ویرایش</button>" +
         "<button class='btn ghost sm' data-share='" + v.id + "'>کپی لینک پرداخت</button>" +
         "<button class='btn ghost sm' data-print='" + v.id + "'>چاپ</button>" +
         "<button class='btn ghost sm' data-paid='" + v.id + "'>" + (v.paid ? "ناتمام" : "پرداخت شد") + "</button>" +
         "<button class='btn icon sm' data-del='" + v.id + "'>حذف</button></div></td></tr>";
     }).join("") + "</tbody></table></div>" : '<div class="empty">هنوز فاکتوری صادر نشده است.</div>';
 
+  list.querySelectorAll("[data-editinv]").forEach(function (b) {
+    b.onclick = function () { startEditInvoice(b.dataset.editinv); };
+  });
   list.querySelectorAll("[data-share]").forEach(function (b) {
     b.onclick = function () {
       var v = db.invoices.find(function (x) { return x.id === b.dataset.share; });
@@ -1474,7 +1531,7 @@ function encodeInvoice(v) {
   };
   var payload = {
     t: v.tracking, n: v.number || null, d: v.date, p: personName(v.personId),
-    items: v.items, pd: v.paid ? 1 : 0, pr: pr
+    items: v.items, pd: v.paid ? 1 : 0, sp: v.supervisionPercent != null ? Number(v.supervisionPercent) : null, pr: pr
   };
   return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
 }
@@ -1498,6 +1555,9 @@ function renderShare(code) {
   var v = code ? decodeInvoice(code) : null;
   renderNav("");
   var sum = v ? v.items.reduce(function (s, i) { return s + Number(i.amount || 0); }, 0) : 0;
+  var sp = v && v.sp != null ? Math.max(0, Math.min(100, Number(v.sp) || 0)) : 0;
+  var supAmt = Math.round(sum * sp / 100);
+  var payable = sum + supAmt;
   /* the customer's browser has no stored profile — use the copy embedded in
      the URL, falling back to the local profile only for owner previews */
   var pr = (v && v.pr) ? v.pr : db.profile;
@@ -1526,6 +1586,8 @@ function renderShare(code) {
               return "<tr><td>" + esc(i.title) + "</td><td class='num'>" + money(i.amount) + "</td></tr>";
             }).join("") +
             "<tr><td><b>جمع کل</b></td><td class='num' style='font-size:17px'>" + money(sum) + "</td></tr>" +
+            (supAmt ? "<tr><td><b>مبلغ نظارت (" + faPercent(sp) + "٪ از خرج کرد)</b></td><td class='num'>" + money(supAmt) + "</td></tr>" +
+              "<tr><td><b style='color:var(--accent)'>مبلغ قابل پرداخت</b></td><td class='num' style='font-size:18px;font-weight:800'>" + money(payable) + "</td></tr>" : "") +
           "</tbody></table></div>" +
           (paid ? '<div class="paid-banner">✅ این فاکتور تسویه شده است. با تشکر از پرداخت شما.</div>' : "") +
           '<h2 style="margin-top:18px;font-size:15px">راهنمای پرداخت</h2>' +
@@ -1733,6 +1795,7 @@ function viewSettings() {
         '<div><label>شماره شبا (بدون IR)</label><input id="s-sheba" inputmode="numeric" value="' + esc(p.sheba || "") + '" placeholder="019000000000000000000001"></div>' +
         '<div><label>شماره کارت</label><input id="s-card" inputmode="numeric" value="' + esc(p.card || "") + '" placeholder="6037…"></div>' +
         '<div><label>نام بانک (نمایش در فاکتور)</label><input id="s-bank" value="' + esc(p.bank || "") + '" placeholder="مثلاً بانک ملت"></div>' +
+        '<div><label>درصد نظارت پیش‌فرض فاکتورها</label><input id="s-sup" inputmode="numeric" value="' + esc(Number(db.supervisionPercent) || 0) + '" placeholder="مثلاً 12"></div>' +
       "</div>" +
       '<div style="margin-top:12px"><label>پیام راهنمای پرداخت (از {phone} برای شماره تماس استفاده کنید)</label>' +
         '<textarea id="s-note" rows="2">' + esc(p.payNote) + "</textarea></div>" +
@@ -1782,6 +1845,7 @@ function viewSettings() {
       bank: $("#s-bank").value.trim(),
       payNote: $("#s-note").value.trim()
     };
+    db.supervisionPercent = Math.max(0, Math.min(100, Number(digitsOnly($("#s-sup").value)) || 0));
     save(); toast("ذخیره شد.");
   };
   $("#s-export").onclick = function () {
@@ -1791,6 +1855,69 @@ function viewSettings() {
     a.click();
   };
   $("#s-import").onclick = function () { $("#s-file").click(); };
+  /* convert a factor-manager (org website) backup into the invoice-manager shape */
+  function normIso(d, createdAt) {
+    var s = String(d || "").trim();
+    var m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (m) {
+      var y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
+      if (y < 1700) { var g = j2g(y, mo, da); y = g[0]; mo = g[1]; da = g[2]; }
+      return y + "-" + (mo < 10 ? "0" : "") + mo + "-" + (da < 10 ? "0" : "") + da;
+    }
+    var c = String(createdAt || "").slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(c) ? c : "";
+  }
+  function convertFactorManagerBackup(old) {
+    var d = defaultData();
+    var st = old.settings || {};
+    /* profile + bank account from the old payment profile */
+    var profiles = st.paymentProfiles || [];
+    var prof = profiles.find(function (x) { return x.id === st.selectedPaymentProfileId; }) || profiles[0];
+    if (prof) {
+      d.profile = {
+        name: prof.name || "", bank: prof.profileBank || "",
+        sheba: String(prof.iban || "").replace(/^IR/, ""),
+        card: prof.card || "", phone: prof.phone || "",
+        payNote: db.profile.payNote || defaultData().profile.payNote,
+        socials: db.profile.socials || { instagram: "", telegram: "", whatsapp: "", site: "" }
+      };
+      if (d.profile.sheba || d.profile.card) {
+        d.accounts.push({ id: uid(), alias: prof.profileName || "حساب اصلی", bank: prof.profileBank || "",
+          sheba: d.profile.sheba, accNumber: "", card: d.profile.card });
+      }
+    }
+    if (st.supervisionPercent != null) d.supervisionPercent = Math.round(Number(st.supervisionPercent) * 100) || 0;
+    var count = 0;
+    function addItems(items, personId) {
+      (items || []).forEach(function (it) {
+        var noteParts = [];
+        (it.attachments || []).forEach(function (a) { if (a && a.filename) noteParts.push("📎 " + a.filename); });
+        d.entries.push({
+          id: it.id || uid(),
+          type: it.type === "received" ? "income" : "expense",
+          title: it.name || "", amount: Math.round(Number(it.amount) || 0),
+          date: normIso(it.date, it.createdAt),
+          personId: personId, tracking: it.trackingCode || "",
+          notes: noteParts.join("، ")
+        });
+        count++;
+      });
+    }
+    (old.employers || []).forEach(function (e) {
+      var notes = [];
+      if (e.supervisionPercent != null && e.supervisionPercent !== "")
+        notes.push("درصد نظارت: " + faPercent(Math.round(e.supervisionPercent * 100)) + "٪ (پایه: " +
+          (e.supervisionBase === "received" ? "دریافتی" : "خرج کرد") + ")");
+      d.people.push({ id: e.id || uid(), name: e.name || "", role: "employer", notes: notes.join("، ") });
+      addItems(e.items, e.id);
+    });
+    (old.employees || []).forEach(function (e) {
+      d.people.push({ id: e.id || uid(), name: e.name || "", role: "employee",
+        notes: e.position ? "شغل: " + e.position : "" });
+      addItems(e.items, e.id);
+    });
+    return { data: d, itemCount: count };
+  }
   $("#s-file").onchange = function (ev) {
     var f = ev.target.files[0];
     if (!f) return;
@@ -1799,6 +1926,14 @@ function viewSettings() {
       try {
         var d = JSON.parse(r.result);
         if (typeof d !== "object" || d === null) throw 0;
+        if (Array.isArray(d.employers) && Array.isArray(d.employees) && !d.entries) {
+          if (!confirm("این یک پشتیبان قدیمی (factor-manager) است. داده‌های فعلی با داده‌های این فایل جایگزین می‌شوند. ادامه می‌دهید؟")) return;
+          var conv = convertFactorManagerBackup(d);
+          db = conv.data; save();
+          toast("وارد شد: " + conv.itemCount + " تراکنش و " + db.people.length + " شخص. تصاویر پیوست به‌صورت نام فایل در یادداشت‌ها ذخیره شدند.");
+          go("dashboard");
+          return;
+        }
         var base = defaultData();
         for (var k in base) if (d[k] === undefined) d[k] = base[k];
         db = d; save(); toast("بازیابی انجام شد."); viewSettings();
