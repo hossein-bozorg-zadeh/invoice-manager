@@ -180,6 +180,22 @@ var STORE_KEY = "invoice_manager_v1";
 var $ = function (s) { return document.querySelector(s); };
 
 /* ---------- storage ---------- */
+/* standard معین chart (seeded into every fresh doc); load() seeds legacy dbs too */
+function seedCats() {
+  var seeds = [
+    { name: "بدهکاران (مطالبات از مشتریان)", type: "income" },
+    { name: "درآمدها", type: "income" },
+    { name: "بانک", type: "income" },
+    { name: "صندوق", type: "income" },
+    { name: "بستانکاران (بدهی به تامین‌کنندگان)", type: "expense" },
+    { name: "هزینه‌ها", type: "expense" },
+    { name: "متریال و مصالح", type: "expense" },
+    { name: "دستمزد و حقوق", type: "expense" },
+    { name: "کرایه و حمل", type: "expense" },
+    { name: "پیش‌پرداخت‌ها", type: "expense" }
+  ];
+  return seeds.map(function (s, i) { return { id: "seed_m_" + (i + 1), code: i + 1, name: s.name, type: s.type }; });
+}
 function defaultData() {
   return {
     profile: {
@@ -194,8 +210,9 @@ function defaultData() {
     transactions: [], // {id, type:"cheque"|"cash"|"transfer"|"card", direction:"incoming"|"outgoing",
                       //  amount, date, personId, accountId, notes,
                       //  cheque fields: number, bank, sayad, dueDate, status, history}
-    cats: [],     // معین accounts: {id, code, name, type:"income"|"expense"}
-    tafsils: [],  // تفصیلی accounts (standalone; people are تفصیلی too): {id, code, name}
+    cats: seedCats(), // معین accounts: {id, code, name, type:"income"|"expense"}
+    tafsils: [],  // تفصیلی accounts (standalone; people are تفصیلی too): {id, code, name, catId}
+    seededLedger: true, // standard معین chart seeded once
     supervisionPercent: 12, // default مبلغ نظارت percent for new invoices (per-invoice override allowed)
     seq: 1000     // sequential invoice numbers
   };
@@ -242,6 +259,11 @@ function load() {
       if (!t.history) t.history = [];
     });
     assignTafsilCodes(d.people);
+    /* legacy dbs: seed the standard معین chart once (بدهکاران، بستانکاران، هزینه‌ها، …) */
+    if (!d.seededLedger && (!d.cats || !d.cats.length)) {
+      d.cats = seedCats();
+      d.seededLedger = true;
+    }
     return d;
   } catch (e) { return defaultData(); }
 }
@@ -753,13 +775,21 @@ function tafsilOptions(selId) {
       if (p.role === "employer") emp += o; else empOff += o;
     });
   db.tafsils.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); })
-    .forEach(function (t) { free += '<option value="' + esc(t.id) + '">تفصیلی-' + faPad(t.code) + " — " + esc(t.name) + "</option>"; });
+    .forEach(function (t) {
+      var cn = t.catId ? catName(t.catId) : "";
+      free += '<option value="' + esc(t.id) + '" data-cat="' + esc(t.catId || "") + '">تفصیلی-' + faPad(t.code) + " — " + esc(t.name) +
+        (cn ? " (معین: " + esc(cn) + ")" : "") + "</option>";
+    });
   var out = '<option value="">بدون تفصیلی</option>';
   if (emp) out += '<optgroup label="کارفرماها">' + emp + "</optgroup>";
   if (empOff) out += '<optgroup label="کارمندان">' + empOff + "</optgroup>";
   if (free) out += '<optgroup label="سایر تفصیلی‌ها">' + free + "</optgroup>";
   if (selId) out = out.replace('<option value="' + esc(selId) + '"', '<option value="' + esc(selId) + '" selected');
   return out;
+}
+function tafsilFilterOptions() {
+  return db.tafsils.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); })
+    .map(function (t) { return '<option value="' + esc(t.id) + '">تفصیلی-' + faPad(t.code) + " — " + esc(t.name) + "</option>"; }).join("");
 }
 function viewEntries() {
   editingEntry = null;
@@ -783,7 +813,7 @@ function viewEntries() {
         '<div><label>جستجو</label><input id="f-q" placeholder="نام آیتم، معین یا کد پیگیری…"></div>' +
         '<div><label>نوع</label><select id="f-type"><option value="">همه</option><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
         '<div><label>معین</label><select id="f-cat"><option value="">همه</option>' + db.cats.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + "</option>"; }).join("") + "</select></div>" +
-        '<div><label>تفصیلی</label><select id="f-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
+        '<div><label>تفصیلی</label><select id="f-person"><option value="">همه</option>' + personOptions() + '<optgroup label="سایر تفصیلی‌ها">' + tafsilFilterOptions() + "</optgroup></select></div>" +
         '<div class="fit"><button class="btn ghost sm" id="csv-all">دانلود اکسل (CSV)</button></div>' +
       "</div>" +
       '<div id="f-summary" class="hint" style="margin-bottom:8px"></div>' +
@@ -802,7 +832,8 @@ function viewEntries() {
         "</div>" +
         '<div>' +
           '<div class="row">' +
-            '<div><label>تفصیلی جدید (حساب آزاد)</label><input id="t-name" placeholder="مثلاً پروژه آلاچیق"></div>' +
+            '<div style="flex:2"><label>تفصیلی جدید (حساب آزاد)</label><input id="t-name" placeholder="مثلاً پروژه آلاچیق"></div>' +
+            '<div><label>معین تفصیلی</label><select id="t-cat"><option value="">—</option>' + db.cats.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + ' (' + (c.type === "income" ? "دریافتی" : "هزینه") + ")</option>"; }).join("") + '</select><p class="hint">انتخاب معین برای تفصیلی اجباری است.</p></div>' +
             '<div class="fit"><button class="btn ghost sm" id="t-add">افزودن تفصیلی</button></div>' +
           "</div>" +
           '<div id="tafsil-list" style="margin-top:10px"></div>' +
@@ -820,6 +851,16 @@ function viewEntries() {
     $("#f-cat").innerHTML = '<option value="">همه</option>' + db.cats.map(function (c) { return '<option value="' + esc(c.id) + '">' + esc(c.name) + "</option>"; }).join("");
   }
   $("#e-type").addEventListener("change", refreshCatSelect);
+  /* picking a تفصیلی that belongs to a معین auto-selects that معین (and switches the نوع سند to match its side) */
+  $("#e-tafsil").addEventListener("change", function () {
+    var opt = this.selectedOptions && this.selectedOptions[0];
+    var cat = opt && opt.dataset ? opt.dataset.cat : "";
+    if (!cat) return;
+    var c = db.cats.find(function (x) { return x.id === cat; });
+    if (!c) return;
+    if ($("#e-type").value !== c.type) { $("#e-type").value = c.type; refreshCatSelect(); }
+    $("#e-cat").value = cat;
+  });
 
   function filtered() {
     var q = $("#f-q").value.trim();
@@ -828,7 +869,7 @@ function viewEntries() {
     var cat = $("#f-cat") ? $("#f-cat").value : "";
     return db.entries.filter(function (e) {
       if (type && e.type !== type) return false;
-      if (person && e.personId !== person) return false;
+      if (person && e.personId !== person && e.tafsilId !== person) return false;
       if (cat && e.catId !== cat) return false;
       if (q && (e.title + " " + e.tracking + " " + catName(e.catId) + " " + (personName(e.personId) !== "—" ? personName(e.personId) : tafsilName(e.tafsilId))).indexOf(q) < 0) return false;
       return true;
@@ -950,7 +991,9 @@ function viewEntries() {
     $("#tafsil-list").innerHTML = db.tafsils.length ? '<div class="tblwrap"><table><tbody>' +
       db.tafsils.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); }).map(function (t) {
         var used = db.entries.filter(function (e) { return e.tafsilId === t.id; }).length;
+        var cn = t.catId ? catName(t.catId) : "";
         return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(t.code) + "</span></td><td>" + esc(t.name) +
+          "</td><td>" + (cn ? '<span class="badge b-blue">معین: ' + esc(cn) + "</span>" : '<span class="badge b-gray">بدون معین (قدیمی)</span>') +
           "</td><td class='hint'>" + money(used) + " سند</td>" +
           "<td><button class='btn icon sm' data-tdel='" + t.id + "'>حذف</button></td></tr>";
       }).join("") + "</tbody></table></div>"
@@ -987,9 +1030,11 @@ function viewEntries() {
   };
   $("#t-add").onclick = function () {
     var name = $("#t-name").value.trim();
+    var catId = $("#t-cat").value;
     if (!name) { toast("نام تفصیلی را وارد کنید."); return; }
+    if (!catId) { toast("معین تفصیلی را انتخاب کنید — تفصیلی بدون معین ثبت نمی‌شود."); return; }
     if (db.tafsils.some(function (t) { return t.name === name; })) { toast("تفصیلی‌ای با همین نام وجود دارد."); return; }
-    db.tafsils.push({ id: uid(), code: nextCode(db.tafsils), name: name });
+    db.tafsils.push({ id: uid(), code: nextCode(db.tafsils), name: name, catId: catId });
     $("#t-name").value = "";
     save(); renderLedgers(); $("#e-tafsil").innerHTML = tafsilOptions(); toast("تفصیلی اضافه شد.");
   };
@@ -1912,10 +1957,15 @@ function viewReports() {
     var catRows = Object.keys(byCatAcc).map(function (k) { return byCatAcc[k]; })
       .sort(function (a, b) { return (b.income + b.expense) - (a.income + a.expense); });
 
-    /* per-تفصیلی breakdown (person or free-standing تفصیلی) */
+    /* per-تفصیلی breakdown (person or free-standing تفصیلی with its معین) */
     var byTaf = {};
     d.entries.forEach(function (e) {
       var lbl = e.personId ? personName(e.personId) : (tafsilName(e.tafsilId) || "بدون تفصیلی");
+      if (!e.personId && e.tafsilId) {
+        var t = db.tafsils.find(function (x) { return x.id === e.tafsilId; });
+        var cn = t && t.catId ? catName(t.catId) : "";
+        if (cn) lbl += " — " + cn;
+      }
       if (!byTaf[lbl]) byTaf[lbl] = { name: lbl, income: 0, expense: 0, n: 0 };
       byTaf[lbl][e.type === "income" ? "income" : "expense"] += Number(e.amount || 0);
       byTaf[lbl].n += 1;
