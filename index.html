@@ -971,8 +971,8 @@ function viewEntries() {
     var q = $("#f-q").value.trim().toLowerCase();
     var type = $("#f-type").value;
     var person = $("#f-person").value;
-    var from = $("#f-from").dataset.iso || "";
-    var to = $("#f-to").dataset.iso || "";
+    var from = readIso("#f-from") || "";
+    var to = readIso("#f-to") || "";
     var sort = $("#f-sort").value;
     var rows = db.entries.filter(function (e) {
       if (type && e.type !== type) return false;
@@ -1515,7 +1515,7 @@ function viewPerson(id) {
       '<p class="hint">📒 تفصیلی-' + faPad(p.tCode) + " — 📗 معین: " + esc((p.catId && catName(p.catId)) || "بدون معین") +
       (p.phone ? " — 📞 " + esc(p.phone) : "") + '</p>' +
       '<div class="row noprint">' +
-        '<div><label>از تاریخ</label><input id="a-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
+        '<div><label>از تاریخ (خالی = همه زمان‌ها)</label><input id="a-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
         '<div><label>تا تاریخ</label><input id="a-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
         '<div class="fit"><button class="btn ghost sm" id="a-year">امسال</button></div>' +
         '<div class="fit"><button class="btn ghost sm" id="a-all">همه زمان‌ها</button></div>' +
@@ -1525,12 +1525,9 @@ function viewPerson(id) {
     "</div>" +
     '<div id="st-body"></div>';
 
-  setJalali("#a-from", isoOf(new Date(ys[0], ys[1] - 1, ys[2])));
-  setJalali("#a-to", today());
-
   function compute() {
-    var from = $("#a-from").dataset.iso || "", to = $("#a-to").dataset.iso || "";
-    function inR(d) { return d >= from && d <= to; }
+    var from = readIso("#a-from") || "", to = readIso("#a-to") || "";
+    function inR(d) { return (!from || d >= from) && (!to || d <= to); } // خالی = بدون حد
     var entries = db.entries.filter(function (e) { return e.personId === p.id && inR(e.date || ""); });
     var invoices = db.invoices.filter(function (v) { return v.personId === p.id && inR(v.date || ""); });
     var txs = db.transactions.filter(function (t) { return t.personId === p.id && inR(t.date || ""); });
@@ -1573,6 +1570,14 @@ function viewPerson(id) {
       '<div class="card"><h2>گردش حساب</h2>' +
         '<p class="hint noprint">آیتم‌ها: ' + money(d.entries.length) + ' مورد (دریافتی ' + money(entryIncome) + " / هزینه " + money(entryExpense) +
         ") — فاکتورها: " + money(d.invoices.length) + ' فاکتور — تراکنش‌ها: ' + money(d.txs.length) + ' مورد</p>' +
+        (function () {
+          var all = db.entries.filter(function (e) { return e.personId === p.id; }).length +
+            db.invoices.filter(function (v) { return v.personId === p.id; }).length +
+            db.transactions.filter(function (t) { return t.personId === p.id; }).length;
+          var shown = d.entries.length + d.invoices.length + d.txs.length;
+          var out = all - shown;
+          return out > 0 ? '<p class="hint noprint" style="color:var(--amber)">⏳ <b>' + money(out) + '</b> رکورد دیگر این شخص خارج از بازهٔ فعلی است — برای دیدن همه، «همه زمان‌ها» را بزنید.</p>' : "";
+        })() +
         (rows.length ? '<div class="tblwrap"><table><thead><tr>' +
           "<th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ (ریال)</th><th>وضعیت</th>" +
           "</tr></thead><tbody>" + rows.map(function (r) {
@@ -1602,8 +1607,6 @@ function viewPerson(id) {
   $("#a-year").onclick = function () { setJalali("#a-from", isoOf(new Date(ys[0], ys[1] - 1, ys[2]))); setJalali("#a-to", today()); renderBody(); };
   $("#a-all").onclick = function () { setJalali("#a-from", ""); setJalali("#a-to", ""); renderBody(); };
   $("#a-csv").onclick = function () {
-    var from = $("#a-from").dataset.iso || "", to = $("#a-to").dataset.iso || "";
-    function inR(dt) { return dt >= from && dt <= to; }
     var rows = [["تاریخ", "نوع", "جهت/وضعیت", "شرح", "مبلغ (ریال)"]];
     compute().entries.forEach(function (e) {
       rows.push([e.date, e.type === "income" ? "دریافتی" : "هزینه", "", e.title, e.amount]);
