@@ -41,6 +41,9 @@ header{background:var(--card);border-bottom:1px solid var(--border);
 .logo .ic{width:34px;height:34px;border-radius:10px;background:var(--accent);
   color:#fff;display:grid;place-items:center;font-size:16px}
 .hbar .spacer{margin-inline-start:auto}
+.searchbox{order:2;width:100%;flex-basis:100%}
+@media(min-width:760px){.searchbox{width:auto;flex-basis:220px}}
+#searchbox input{padding:7px 12px;font-size:13.5px;border-radius:9px;background:var(--bg)}
 #theme-btn{border:1px solid var(--border);background:transparent;border-radius:9px;
   padding:6px 10px;color:var(--muted);font-size:15px}
 #theme-btn:hover{color:var(--accent);border-color:var(--accent)}
@@ -152,6 +155,7 @@ td.num,th.num{text-align:left;direction:ltr}
   body{background:#fff}
   .card{box-shadow:none;border:none;padding:0}
   .inv-top{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .tblwrap{overflow:visible!important;max-height:none!important}
 }
 </style>
 </head>
@@ -160,6 +164,9 @@ td.num,th.num{text-align:left;direction:ltr}
 <header>
   <div class="hbar">
     <div class="logo"><span class="ic">🧾</span><span id="app-title">مدیریت فاکتور</span></div>
+    <div class="searchbox">
+      <form id="gform" role="search"><input id="gsearch" placeholder="جستجو (شخص، آیتم، فاکتور، چک…)" autocomplete="off"></form>
+    </div>
     <button id="theme-btn" title="تغییر تم" aria-label="تغییر تم">🌙</button>
     <nav id="nav"></nav>
   </div>
@@ -214,6 +221,7 @@ function defaultData() {
     tafsils: [],  // تفصیلی accounts (standalone; people are تفصیلی too): {id, code, name, catId}
     seededLedger: true, // standard معین chart seeded once
     supervisionPercent: 12, // default مبلغ نظارت percent for new invoices (per-invoice override allowed)
+    autoBackup: true, // daily local snapshot in localStorage (inv_ab_snapshot)
     seq: 1000     // sequential invoice numbers
   };
 }
@@ -583,6 +591,8 @@ function renderNav(active) {
 function render() {
   var r = route();
   if (r.indexOf("share/") === 0) { renderShare(decodeURIComponent(r.slice(6))); return; }
+  if (r.indexOf("person/") === 0) { renderNav(""); viewPerson(r.slice(7)); window.scrollTo(0, 0); return; }
+  if (r.indexOf("search/") === 0) { renderNav(""); viewSearch(decodeURIComponent(r.slice(7))); window.scrollTo(0, 0); return; }
   var known = ["dashboard", "entries", "ledger", "people", "transactions", "invoice", "reports", "settings"];
   if (known.indexOf(r) < 0) r = "dashboard";
   renderNav(r);
@@ -590,6 +600,7 @@ function render() {
   ({ dashboard: viewDashboard, entries: viewEntries, ledger: viewLedger, people: viewPeople,
      transactions: viewTransactions,
      invoice: viewInvoice, reports: viewReports, settings: viewSettings }[r])();
+  autoBackupTick();
   window.scrollTo(0, 0);
 }
 window.addEventListener("hashchange", render);
@@ -605,6 +616,58 @@ function totals(list) {
 }
 function isThisMonth(iso) {
   return faMonthKey(iso) === faMonthKey(today());
+}
+
+/* ---------- backup safety net ---------- */
+/* daily local snapshot: at most once per Jalali day, written in the
+   inv_ab_snapshot localStorage key (kept separate from the live data) */
+function backupFileDateISO() { return String(localStorage.getItem("inv_lastfile_bk") || ""); }
+function autoBackupTick() {
+  try {
+    if (db.autoBackup === false) return;
+    var key = "inv_ab_snapshot";
+    var prev = null;
+    try { prev = JSON.parse(localStorage.getItem(key) || "null"); } catch (e) {}
+    if (prev && prev.d === today()) return; // snapshot from today already exists
+    try {
+      localStorage.setItem(key, JSON.stringify({ d: today(), t: new Date().toISOString(), data: db }));
+    } catch (e2) {
+      /* most likely quota exceeded — stay quiet, just stop trying today */
+      try { localStorage.setItem("inv_ab_quota", "1"); } catch (e3) {}
+    }
+  } catch (e) {}
+}
+function autoBackupSnapshot() {
+  try { return JSON.parse(localStorage.getItem("inv_ab_snapshot") || "null"); } catch (e) { return null; }
+}
+/* sanity-check a backup file/local snapshot before replacing the live db */
+function validateBackup(d) {
+  var counts = {}, errs = [];
+  if (typeof d !== "object" || d === null || Array.isArray(d)) {
+    return { ok: false, errs: ["ساختار فایل نامعتبر است — انتظار یک object JSON می‌رفت."], counts: counts };
+  }
+  /* legacy factor-manager backups (converted on import, like before) */
+  if (Array.isArray(d.employers) && Array.isArray(d.employees)) {
+    var ppl = d.employers.length + d.employees.length, items = 0;
+    d.employers.concat(d.employees).forEach(function (e) { (e.items || []).forEach(function () { items++; }); });
+    return { ok: true, legacy: true, errs: [], counts: { "شخص": ppl, "آیتم": items } };
+  }
+  var known = 0;
+  ["people", "entries", "invoices", "transactions", "accounts", "cats", "tafsils"].forEach(function (k) {
+    if (Array.isArray(d[k])) { known++; counts[k === "cats" ? "معین" : k === "tafsils" ? "تفصیلی" : k === "people" ? "شخص" : k === "entries" ? "آیتم" : k === "invoices" ? "فاکتور" : k === "transactions" ? "تراکنش" : "حساب بانکی"] = d[k].length; }
+  });
+  if (!known) return { ok: false, errs: ["هیچ دادهٔ شناخته‌شده‌ای (people/entries/invoices/…) در فایل نیست."], counts: counts };
+  (d.entries || []).forEach(function (e, i) {
+    if (!e || typeof e !== "object" || !(Number(e.amount) > 0)) errs.push("آیتم شماره " + (i + 1) + " فاقد مبلغ معتبر است.");
+  });
+  (d.invoices || []).forEach(function (v, i) {
+    if (!v || !Array.isArray(v.items)) errs.push("فاکتور شماره " + (i + 1) + " فاقد لیست آیتم است.");
+  });
+  (d.people || []).forEach(function (p, i) {
+    if (!p || typeof p !== "object" || !p.name) errs.push("شخص شماره " + (i + 1) + " نام ندارد.");
+  });
+  if (d.seq != null && !(Number(d.seq) >= 0)) errs.push("شماره‌گذاری فاکتور (seq) نامعتبر است.");
+  return { ok: errs.length === 0, legacy: false, errs: errs, counts: counts };
 }
 
 /* ================= dashboard ================= */
@@ -702,7 +765,36 @@ function viewDashboard() {
     return chequeTxs().filter(function (c) { return c.status === st; }).length;
   };
 
+  var unpaid = db.invoices.filter(function (v) { return !v.paid; })
+    .map(function (v) { return { v: v, total: invoiceTotals(v).total }; })
+    .sort(function (a, b) { return (b.v.date || "") < (a.v.date || "") ? -1 : 1; });
+  var unpaidSum = unpaid.reduce(function (s, u) { return s + u.total; }, 0);
+  var byP = {};
+  db.people.forEach(function (x) { byP[x.id] = { p: x, n: 0, sum: 0 }; });
+  db.entries.forEach(function (e) {
+    var b = e.personId && byP[e.personId]; if (!b) return;
+    b.n += 1; b.sum += Number(e.amount || 0);
+  });
+  db.invoices.forEach(function (v) {
+    var b = v.personId && byP[v.personId]; if (!b) return;
+    b.n += 1; b.sum += invoiceTotals(v).total;
+  });
+  var topP = Object.keys(byP).map(function (k) { return byP[k]; }).filter(function (x) { return x.n; })
+    .sort(function (a, b) { return b.sum - a.sum; }).slice(0, 5);
+
   $("#view").innerHTML =
+    (function () {
+      var bf = backupFileDateISO();
+      var days = bf ? Math.round((Date.now() - new Date(bf + "T12:00:00")) / 86400000) : null;
+      if (!bf || days > 13) {
+        return '<div class="card" style="border-style:dashed;border-color:var(--amber);margin-bottom:16px"><div class="row" style="align-items:center">' +
+          '<span class="badge b-amber">🔒</span>' +
+          '<span style="flex:1">داده‌های این برنامه فقط در همین مرورگر هستند. ' + (bf ? "آخرین خروجی JSON: " + money(days) + " روز پیش." : "تا امروز هیچ خروجی JSON نگرفته‌اید.") + " یک نسخه پشتیبان بگیرید.</span>" +
+          '<div class="fit"><button class="btn sm" id="dash-bk">دانلود پشتیبان JSON</button></div>' +
+        "</div></div>";
+      }
+      return "";
+    })() +
     '<div class="grid3">' +
       '<div class="stat income"><div class="t">جمع دریافتی</div><div class="v">' + money(t.income) + ' <span style="font-size:12px">ریال</span></div></div>' +
       '<div class="stat expense"><div class="t">جمع هزینه</div><div class="v">' + money(t.expense) + ' <span style="font-size:12px">ریال</span></div></div>' +
@@ -752,6 +844,26 @@ function viewDashboard() {
         : '<div class="empty">چکی در ۱۴ روز آینده نیست.</div>') +
       "</div>" +
     "</div>" +
+    '<div class="grid2" style="align-items:start">' +
+      '<div class="card"><h2>فاکتورهای پرداخت‌نشده <span class="hint">(' + money(unpaid.length) +')</span></h2>' +
+        (unpaid.length ? '<p class="hint" style="margin-bottom:8px">مجموع بدهی فاکتورها: <b class="num">' + money(unpaidSum) + ' ریال</b></p>' +
+          '<div class="tblwrap"><table><tbody>' + unpaid.slice(0, 5).map(function (u) {
+            return "<tr style='cursor:pointer' data-uinv='" + u.v.id + "'><td>" + (u.v.number ? "فاکتور-" + money(u.v.number) : "صورتحساب") +
+              "</td><td>" + esc(personName(u.v.personId)) + "</td><td class='num'>" + money(u.total) +
+              "</td><td>" + faDate(u.v.date) + "</td></tr>";
+          }).join("") + "</tbody></table></div>" + (unpaid.length > 5 ? '<p class="hint noprint">و ' + money(unpaid.length - 5) + ' فاکتور دیگر…</p>' : "")
+        : '<div class="empty">همه فاکتورها پرداخت شده‌اند. 🎉</div>') +
+      "</div>" +
+      '<div class="card"><h2>فعال‌ترین اشخاص</h2>' +
+        (topP.length ? '<div class="tblwrap"><table><tbody>' + topP.map(function (x) {
+          return "<tr style='cursor:pointer' data-topacct='" + x.p.id + "'><td>" + personRoleBadge(x.p) + "</td>" +
+            "<td><b>" + esc(x.p.name) + "</b></td><td class='num'>" + money(x.sum) + "</td>" +
+            "<td class='hint'>" + money(x.n) + " رکورد</td>" +
+            "<td class='hint'>صورتحساب ←</td></tr>";
+        }).join("") + "</tbody></table></div>"
+        : '<div class="hint">رکوردی وصل به اشخاص نیست.</div>') +
+      "</div>" +
+    "</div>" +
     '<div class="card"><h2>آخرین آیتم‌ها</h2>' +
       (recent.length ? '<div class="tblwrap"><table><tbody>' + recent.map(function (e) {
         return "<tr><td>" + typeBadge(e.type) + "</td><td>" + esc(e.title) +
@@ -759,7 +871,28 @@ function viewDashboard() {
       }).join("") + "</tbody></table></div>"
       : '<div class="empty">هنوز آیتمی ثبت نشده است. از تب «آیتم‌ها» شروع کنید.</div>') +
     "</div>";
+
+  var bkBtn = $("#dash-bk");
+  if (bkBtn) bkBtn.onclick = function () {
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(db, null, 2)], { type: "application/json" }));
+    a.download = "invoice-manager-backup.json";
+    a.click();
+    try { localStorage.setItem("inv_lastfile_bk", today()); } catch (e) {}
+    toast("فایل پشتیبان دانلود شد.");
+    viewDashboard();
+  };
+  $("#view").querySelectorAll("[data-uinv]").forEach(function (r) {
+    r.onclick = function () {
+      try { sessionStorage.setItem("inv_edit_inv", r.dataset.uinv); } catch (e) {}
+      go("invoice");
+    };
+  });
+  $("#view").querySelectorAll("[data-topacct]").forEach(function (r) {
+    r.onclick = function () { go("person/" + r.dataset.topacct); };
+  });
 }
+
 
 /* ================= entries ================= */
 var editingEntry = null;
@@ -817,6 +950,14 @@ function viewEntries() {
 
   bindAmountInput($("#e-amount"));
   bindEnter(".card", "#e-add");
+  try {
+    var _pref = sessionStorage.getItem("inv_prefill");
+    if (_pref !== null) {
+      sessionStorage.removeItem("inv_prefill");
+      $("#f-q").value = _pref;
+      $("#f-q").dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  } catch (e) {}
 
   function jStartISO() {
     var t = new Date();
@@ -1089,6 +1230,94 @@ function viewLedger() {
   renderLedgers();
 }
 
+/* convert a factor-manager (org website) backup into the invoice-manager shape */
+function normIso(d, createdAt) {
+  var s = String(d || "").trim();
+  var m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (m) {
+    var y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
+    if (y < 1700) { var g = j2g(y, mo, da); y = g[0]; mo = g[1]; da = g[2]; }
+    return y + "-" + (mo < 10 ? "0" : "") + mo + "-" + (da < 10 ? "0" : "") + da;
+  }
+  var c = String(createdAt || "").slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(c) ? c : "";
+}
+function convertFactorManagerBackup(old) {
+  var d = defaultData();
+  var st = old.settings || {};
+  /* profile + bank account from the old payment profile */
+  var profiles = st.paymentProfiles || [];
+  var prof = profiles.find(function (x) { return x.id === st.selectedPaymentProfileId; }) || profiles[0];
+  if (prof) {
+    d.profile = {
+      name: prof.name || "", bank: prof.profileBank || "",
+      sheba: String(prof.iban || "").replace(/^IR/, ""),
+      card: prof.card || "", phone: prof.phone || "",
+      payNote: db.profile.payNote || defaultData().profile.payNote,
+      socials: (db.profile && db.profile.socials) || { instagram: "", telegram: "", whatsapp: "", site: "" }
+    };
+    if (d.profile.sheba || d.profile.card) {
+      d.accounts.push({ id: uid(), alias: prof.profileName || "حساب اصلی", bank: prof.profileBank || "",
+        sheba: d.profile.sheba, accNumber: "", card: d.profile.card });
+    }
+  }
+  if (st.supervisionPercent != null) d.supervisionPercent = Math.round(Number(st.supervisionPercent) * 100) || 0;
+  var count = 0;
+  function addItems(items, personId) {
+    (items || []).forEach(function (it) {
+      var noteParts = [];
+      (it.attachments || []).forEach(function (a) { if (a && a.filename) noteParts.push("📎 " + a.filename); });
+      d.entries.push({
+        id: it.id || uid(),
+        type: it.type === "received" ? "income" : "expense",
+        title: it.name || "", amount: Math.round(Number(it.amount) || 0),
+        date: normIso(it.date, it.createdAt),
+        personId: personId, tracking: it.trackingCode || "",
+        notes: noteParts.join("، ")
+      });
+      count++;
+    });
+  }
+  (old.employers || []).forEach(function (e) {
+    var notes = [];
+    if (e.supervisionPercent != null && e.supervisionPercent !== "")
+      notes.push("درصد نظارت: " + faPercent(Math.round(e.supervisionPercent * 100)) + "٪ (پایه: " +
+        (e.supervisionBase === "received" ? "دریافتی" : "خرج کرد") + ")");
+    d.people.push({ id: e.id || uid(), name: e.name || "", role: "employer", notes: notes.join("، ") });
+    addItems(e.items, e.id);
+  });
+  (old.employees || []).forEach(function (e) {
+    d.people.push({ id: e.id || uid(), name: e.name || "", role: "employee",
+      notes: e.position ? "شغل: " + e.position : "" });
+    addItems(e.items, e.id);
+  });
+  return { data: d, itemCount: count };
+}
+
+/* find a good db-restore path: merge stored defaults into a validated backup,
+   ask for confirmation with real counts, then swap + save */
+function restoreBackup(d, sourceLabel, done) {
+  var v = validateBackup(d);
+  if (!v.ok) {
+    toast("بازنشانی ناموفق: " + (v.errs[0] || "فایل معتبر نیست."));
+    return false;
+  }
+  var cnt = Object.keys(v.counts).map(function (k) { return k + ": " + money(v.counts[k]); }).join(" — ") || "خالی";
+  if (!confirm("بازیابی " + sourceLabel + "\n\n" + cnt + "\n\nداده‌های فعلی با این نسخه جایگزین می‌شوند. ادامه می‌دهید؟")) return false;
+  var base = defaultData();
+  var extra = {};
+  if (v.legacy) { /* factor-manager: convert first */
+    var conv = convertFactorManagerBackup(d);
+    d = conv.data;
+  }
+  for (var k in base) if (d[k] === undefined) d[k] = base[k];
+  if (d.profile && !d.profile.socials) d.profile.socials = base.profile.socials;
+  db = d; save();
+  toast("بازیابی انجام شد (" + sourceLabel + ").");
+  if (done) done();
+  go("dashboard");
+  return true;
+}
 function exportCsv(rows, suffix) {
   var rows2 = [["نوع", "نام آیتم", "شخص", "توضیحات", "مبلغ (ریال)", "تاریخ", "کد پیگیری"]];
   rows.forEach(function (e) {
@@ -1186,11 +1415,15 @@ function viewPeople() {
           "</td><td class='mono'>" + esc(p.phone || "—") +
           "</td><td class='mono'>" + esc(p.nationalId || "—") + "</td>" +
           "<td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
+          "<button class='btn ghost sm' data-acct='" + p.id + "'>صورتحساب</button>" +
           "<button class='btn ghost sm' data-detail='" + p.id + "'>جزئیات</button>" +
           "<button class='btn icon sm blue' data-edit='" + p.id + "'>ویرایش</button>" +
           "<button class='btn icon sm' data-del='" + p.id + "'>حذف</button></div></td></tr>";
       }).join("") + "</tbody></table></div>" : '<div class="empty">هنوز کسی اضافه نشده است.</div>';
 
+    $("#people-list").querySelectorAll("[data-acct]").forEach(function (b) {
+      b.onclick = function () { go("person/" + b.dataset.acct); };
+    });
     $("#people-list").querySelectorAll("[data-del]").forEach(function (b) {
       b.onclick = function () {
         if (!confirm("آیا از حذف این شخص مطمئن هستید؟")) return;
@@ -1260,6 +1493,243 @@ function viewPeople() {
   list();
 }
 
+/* ================= person statement (صورتحساب فرد) ================= */
+function invoiceTotals(v) {
+  var sum = v.items.reduce(function (s, i) {
+    return s + Number(i.amount || 0) * Math.max(1, Number(i.qty || 1) || 1);
+  }, 0);
+  var sp = v.supervisionPercent != null ? Math.max(0, Math.min(100, Number(v.supervisionPercent) || 0)) : 0;
+  var sup = Math.round(sum * sp / 100);
+  return { sum: sum, sup: sup, total: sum + sup };
+}
+function viewPerson(id) {
+  var p = db.people.find(function (x) { return x.id === id; });
+  if (!p) { $("#view").innerHTML = '<div class="card"><div class="empty">شخص پیدا نشد.</div></div>'; return; }
+
+  var p2 = today().split("-");
+  var j = g2j(+p2[0], +p2[1], +p2[2]);
+  var ys = j2g(j[0], 1, 1);
+  $("#view").innerHTML =
+    '<div class="noprint-back"><a class="backlink noprint" href="#/people">→ بازگشت به کارکنان و کارفرما</a></div>' +
+    '<div class="card"><h2>صورتحساب: ' + esc(p.name) + " " + personRoleBadge(p) + '</h2>' +
+      '<p class="hint">📒 تفصیلی-' + faPad(p.tCode) + " — 📗 معین: " + esc((p.catId && catName(p.catId)) || "بدون معین") +
+      (p.phone ? " — 📞 " + esc(p.phone) : "") + '</p>' +
+      '<div class="row noprint">' +
+        '<div><label>از تاریخ</label><input id="a-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
+        '<div><label>تا تاریخ</label><input id="a-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="a-year">امسال</button></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="a-all">همه زمان‌ها</button></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="a-csv">دانلود اکسل (CSV)</button></div>' +
+        '<div class="fit"><button class="btn ghost sm" id="a-print">🖨 چاپ صورتحساب</button></div>' +
+      "</div>" +
+    "</div>" +
+    '<div id="st-body"></div>';
+
+  setJalali("#a-from", isoOf(new Date(ys[0], ys[1] - 1, ys[2])));
+  setJalali("#a-to", today());
+
+  function compute() {
+    var from = $("#a-from").dataset.iso || "", to = $("#a-to").dataset.iso || "";
+    function inR(d) { return d >= from && d <= to; }
+    var entries = db.entries.filter(function (e) { return e.personId === p.id && inR(e.date || ""); });
+    var invoices = db.invoices.filter(function (v) { return v.personId === p.id && inR(v.date || ""); });
+    var txs = db.transactions.filter(function (t) { return t.personId === p.id && inR(t.date || ""); });
+    return { entries: entries, invoices: invoices, txs: txs };
+  }
+  function renderBody() {
+    var d = compute();
+    var entryIncome = 0, entryExpense = 0;
+    d.entries.forEach(function (e) {
+      if (e.type === "income") entryIncome += Number(e.amount || 0); else entryExpense += Number(e.amount || 0);
+    });
+    var invSum = 0, invPaid = 0, invUnpaid = 0;
+    d.invoices.forEach(function (v) {
+      var tt = invoiceTotals(v);
+      invSum += tt.total;
+      if (v.paid) invPaid += tt.total; else invUnpaid += tt.total;
+    });
+    var cashIn = 0, cashOut = 0, chequeInOpen = 0, chequeOutOpen = 0;
+    d.txs.forEach(function (t) {
+      var a = Number(t.amount || 0), outgoing = t.direction === "outgoing";
+      if (t.type === "cheque") {
+        if (t.status === "open") { if (outgoing) chequeOutOpen += a; else chequeInOpen += a; }
+        else if (t.status === "cashed") { if (outgoing) cashOut += a; else cashIn += a; }
+      } else { if (outgoing) cashOut += a; else cashIn += a; }
+    });
+
+    var rows = [];
+    d.entries.forEach(function (e) { rows.push({ date: e.date, kind: "entry", e: e }); });
+    d.invoices.forEach(function (v) { rows.push({ date: v.date, kind: "invoice", v: v }); });
+    d.txs.forEach(function (t) { rows.push({ date: t.date, kind: "tx", t: t }); });
+    rows.sort(function (a, b) { return (a.date || "") < (b.date || "") ? -1 : 1; });
+
+    $("#st-body").innerHTML =
+      '<div class="grid4" style="margin-bottom:16px">' +
+        '<div class="stat balance"><div class="t">جمع فاکتورها (با نظارت)</div><div class="v">' + money(invSum) + ' <span style="font-size:12px">ریال</span></div></div>' +
+        '<div class="stat income"><div class="t">وصول‌شده (فاکتور + نقدی/چک واصل)</div><div class="v">' + money(invPaid + cashIn) + ' <span style="font-size:12px">ریال</span></div></div>' +
+        '<div class="stat expense"><div class="t">مانده فاکتورهای پرداخت‌نشده</div><div class="v">' + money(invUnpaid) + '</div></div>' +
+        '<div class="stat"><div class="t">چک در جریان (و/پ)</div><div class="v">' + money(chequeInOpen) + ' <span style="font-size:12px">—</span> ' + money(chequeOutOpen) + '</div></div>' +
+      "</div>" +
+      '<div class="card"><h2>گردش حساب</h2>' +
+        '<p class="hint noprint">آیتم‌ها: ' + money(d.entries.length) + ' مورد (دریافتی ' + money(entryIncome) + " / هزینه " + money(entryExpense) +
+        ") — فاکتورها: " + money(d.invoices.length) + ' فاکتور — تراکنش‌ها: ' + money(d.txs.length) + ' مورد</p>' +
+        (rows.length ? '<div class="tblwrap"><table><thead><tr>' +
+          "<th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ (ریال)</th><th>وضعیت</th>" +
+          "</tr></thead><tbody>" + rows.map(function (r) {
+            if (r.kind === "entry") {
+              return "<tr><td>" + faDate(r.e.date) + "</td><td>" + typeBadge(r.e.type) +
+                "</td><td>" + esc(r.e.title) + (r.e.note ? ' <span class="hint">(' + esc(r.e.note) + ")</span>" : "") +
+                "</td><td class='num'>" + money(r.e.amount) + "</td><td></td></tr>";
+            }
+            if (r.kind === "invoice") {
+              var tt = invoiceTotals(r.v);
+              return "<tr><td>" + faDate(r.v.date) + '</td><td><span class="badge b-amber">فاکتور</span></td>' +
+                "<td>" + (r.v.number ? "فاکتور-" + money(r.v.number) : "صورتحساب") + " <span class='hint'>(" + money(r.v.items.length) + " آیتم" + (tt.sup > 0 ? " + نظارت " + faPercent(r.v.supervisionPercent) + "٪" : "") + ")</span>" +
+                "</td><td class='num'>" + money(tt.total) + "</td><td>" + (r.v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') + "</td></tr>";
+            }
+            var t = r.t;
+            return "<tr><td>" + faDate(t.date) + "</td><td>" + dirBadge(t) + " " + typeBadgeTx(t) + "</td>" +
+              "<td>" + (t.type === "cheque" ? "چک " + esc(t.number || "") + (t.bank ? " <span class='hint'>(" + esc(t.bank) + ")</span>" : "") : esc(TX_TYPES[t.type]) + (t.accountId ? " <span class='hint'>(" + esc(accountLabel(t.accountId)) + ")</span>" : "")) +
+              "</td><td class='num'>" + money(t.amount) + "</td><td>" + (t.type === "cheque" ? statusBadge(t) : "") + "</td></tr>";
+          }).join("") + "</tbody></table></div>"
+        : '<div class="empty">در این بازه گردشی برای این شخص ثبت نشده.</div>') +
+      "</div>";
+  }
+  $("#a-from").addEventListener("input", renderBody);
+  $("#a-from").addEventListener("change", renderBody);
+  $("#a-to").addEventListener("input", renderBody);
+  $("#a-to").addEventListener("change", renderBody);
+  $("#a-year").onclick = function () { setJalali("#a-from", isoOf(new Date(ys[0], ys[1] - 1, ys[2]))); setJalali("#a-to", today()); renderBody(); };
+  $("#a-all").onclick = function () { setJalali("#a-from", ""); setJalali("#a-to", ""); renderBody(); };
+  $("#a-csv").onclick = function () {
+    var from = $("#a-from").dataset.iso || "", to = $("#a-to").dataset.iso || "";
+    function inR(dt) { return dt >= from && dt <= to; }
+    var rows = [["تاریخ", "نوع", "جهت/وضعیت", "شرح", "مبلغ (ریال)"]];
+    compute().entries.forEach(function (e) {
+      rows.push([e.date, e.type === "income" ? "دریافتی" : "هزینه", "", e.title, e.amount]);
+    });
+    compute().invoices.forEach(function (v) {
+      var tt = invoiceTotals(v);
+      rows.push([v.date, "فاکتور", v.paid ? "پرداخت شده" : "پرداخت نشده", (v.number ? "فاکتور-" + (v.number || "") : "صورتحساب"), tt.total]);
+    });
+    compute().txs.forEach(function (t) {
+      rows.push([t.date, TX_TYPES[t.type], t.direction === "outgoing" ? "پرداختی" : "دریافتی",
+        t.type === "cheque" ? ("چک " + (t.number || "") + (t.bank ? " — " + t.bank : "")) : TX_TYPES[t.type], t.amount]);
+    });
+    var csv = "\uFEFF" + rows.map(function (r) {
+      return r.map(function (c) { return '"' + String(c == null ? "" : c).replace(/"/g, '""') + '"'; }).join(",");
+    }).join("\r\n");
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = "statement-" + (p.name ? p.name.replace(/\s+/g, "-") : "") + ".csv";
+    a.click();
+    toast("فایل CSV دانلود شد.");
+  };
+  $("#a-print").onclick = function () { window.print(); };
+  renderBody();
+  bindJalaliInputs();
+}
+
+/* ================= global search ================= */
+function viewSearch(qRaw) {
+  var q = (qRaw || "").trim().toLowerCase();
+  $("#view").innerHTML =
+    '<div class="card"><h2>جستجو در همه بخش‌ها' + (qRaw ? ' — «' + esc(qRaw) + '»' : "") + '</h2>' +
+      '<div class="row noprint">' +
+        '<div style="flex:2"><input id="gs-q" value="' + esc(qRaw || "") + '" placeholder="نام شخص، نام آیتم، شماره چک، کد پیگیری…"></div>' +
+        '<div class="fit"><button class="btn" id="gs-go">جستجو</button></div>' +
+        '<div class="fit hint">/ یا Ctrl+K — کادر جستجوی بالای صفحه</div>' +
+      "</div>" +
+    "</div>" +
+    '<div id="gs-body"></div>';
+
+  function run() {
+    var v = $("#gs-q").value.trim();
+    go("search/" + encodeURIComponent(v));
+  }
+  $("#gs-go").onclick = run;
+  $("#gs-q").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { ev.preventDefault(); run(); } });
+
+  var body = $("#gs-body");
+  if (!q) { body.innerHTML = '<div class="card"><div class="empty">عبارتی بنویسید تا در همه بخش‌ها بگردیم.</div></div>'; return; }
+  var escQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  var rx = new RegExp(escQ, "i");
+  var html = "";
+
+  var ppl = db.people.filter(function (p) {
+    return rx.test(p.name + " " + (p.phone || "") + " " + (p.nationalId || "") + " " + (p.notes || ""));
+  });
+  html += '<div class="card"><h2>شخص‌ها <span class="hint">(' + money(ppl.length) + ')</span></h2>' +
+    (ppl.length ? '<div class="tblwrap"><table><tbody>' + ppl.slice(0, 25).map(function (p) {
+      return "<tr style='cursor:pointer' data-sp='" + p.id + "'><td>" + personRoleBadge(p) + "</td>" +
+        "<td><b>" + esc(p.name) + "</b>" + (p.notes ? '<br><span class="hint">' + esc(p.notes) + "</span>" : "") + "</td>" +
+        "<td class='mono hint'>" + esc(p.phone || "—") + "</td>" +
+        "<td class='hint'>" + esc((p.catId && catName(p.catId)) || "بدون معین") + "</td>" +
+        "<td class='hint'>صورتحساب ←</td></tr>";
+    }).join("") + "</tbody></table></div>"
+    : '<div class="hint">موردی پیدا نشد.</div>') + "</div>";
+
+  var en = db.entries.filter(function (e) {
+    return rx.test(e.title + " " + (e.tracking || "") + " " + (e.note || ""));
+  });
+  html += '<div class="card"><h2>آیتم‌ها <span class="hint">(' + money(en.length) + ')</span></h2>' +
+    (en.length ? '<div class="tblwrap"><table><tbody>' + en.slice(0, 25).map(function (e) {
+      return "<tr style='cursor:pointer' data-se='" + e.id + "'><td>" + typeBadge(e.type) + "</td>" +
+        "<td>" + esc(e.title) + "</td><td class='num'>" + money(e.amount) + "</td>" +
+        "<td>" + faDate(e.date) + "</td><td class='hint'>" + esc(personName(e.personId)) + "</td></tr>";
+    }).join("") + "</tbody></table></div>"
+    : '<div class="hint">موردی پیدا نشد.</div>') + "</div>";
+
+  var inv = db.invoices.filter(function (v) {
+    return rx.test((v.tracking || "") + " " + (v.number || "") + " " + v.items.map(function (i) { return i.title; }).join(" "));
+  });
+  html += '<div class="card"><h2>فاکتورها <span class="hint">(' + money(inv.length) + ')</span></h2>' +
+    (inv.length ? '<div class="tblwrap"><table><tbody>' + inv.slice(0, 25).map(function (v) {
+      var tt = invoiceTotals(v);
+      return "<tr style='cursor:pointer' data-si='" + v.id + "'><td><b>" + (v.number ? "فاکتور-" + money(v.number) : "صورتحساب") + "</b></td>" +
+        "<td class='mono hint'>" + esc(v.tracking || "") + "</td><td>" + esc(personName(v.personId)) + "</td>" +
+        "<td class='num'>" + money(tt.total) + "</td>" +
+        "<td>" + (v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') + "</td></tr>";
+    }).join("") + "</tbody></table></div>"
+    : '<div class="hint">موردی پیدا نشد.</div>') + "</div>";
+
+  var tx = db.transactions.filter(function (t) {
+    return rx.test((t.number || "") + " " + (t.bank || "") + " " + (t.sayad || "") + " " + (t.notes || ""));
+  });
+  html += '<div class="card"><h2>دریافت و پرداخت <span class="hint">(' + money(tx.length) + ')</span></h2>' +
+    (tx.length ? '<div class="tblwrap"><table><tbody>' + tx.slice(0, 25).map(function (t) {
+      return "<tr style='cursor:pointer' data-sx='" + t.id + "'><td>" + typeBadgeTx(t) + "</td>" +
+        "<td>" + dirBadge(t) + "</td>" +
+        "<td>" + (t.type === "cheque" ? "چک " + esc(t.number || "") + (t.bank ? " <span class='hint'>(" + esc(t.bank) + ")</span>" : "") : esc(TX_TYPES[t.type])) + "</td>" +
+        "<td class='num'>" + money(t.amount) + "</td><td class='hint'>" + esc(personName(t.personId)) + "</td></tr>";
+    }).join("") + "</tbody></table></div>"
+    : '<div class="hint">موردی پیدا نشد.</div>') + "</div>";
+
+  body.innerHTML = html;
+  body.querySelectorAll("[data-sp]").forEach(function (r) {
+    r.onclick = function () { go("person/" + r.dataset.sp); };
+  });
+  body.querySelectorAll("[data-se]").forEach(function (r) {
+    r.onclick = function () {
+      var e = db.entries.find(function (x) { return x.id === r.dataset.se; });
+      try { sessionStorage.setItem("inv_prefill", e.title); } catch (er) {}
+      go("entries");
+    };
+  });
+  body.querySelectorAll("[data-si]").forEach(function (r) {
+    r.onclick = function () {
+      try { sessionStorage.setItem("inv_edit_inv", r.dataset.si); } catch (er) {}
+      go("invoice");
+    };
+  });
+  body.querySelectorAll("[data-sx]").forEach(function (r) {
+    r.onclick = function () {
+      var t = db.transactions.find(function (x) { return x.id === r.dataset.sx; });
+      try { sessionStorage.setItem("inv_prefill_tx", (t.type === "cheque" ? (t.number || "") : t.notes || "")); } catch (er) {}
+      go("transactions");
+    };
+  });
+}
 /* ================= transactions (cheques + payments) ================= */
 var IRAN_BANKS = ["بانک ملی ایران", "بانک صادرات", "بانک ملت", "بانک تجارت", "بانک سپه",
   "بانک کشاورزی", "بانک رفاه", "بانک مسکن", "بانک پارسیان", "بانک پاسارگاد",
@@ -1362,6 +1832,14 @@ function viewTransactions() {
   bindAmountInput($("#tx-amount"));
   bindEnter(".card", "#tx-add");
   setJalali("#tx-date", today());
+  try {
+    var _prefTx = sessionStorage.getItem("inv_prefill_tx");
+    if (_prefTx !== null) {
+      sessionStorage.removeItem("inv_prefill_tx");
+      $("#tf-q").value = _prefTx;
+      $("#tf-q").dispatchEvent(new Event("input", { bubbles: true }));
+    }
+  } catch (e) {}
 
   function toggleFields() {
     var isCheque = $("#tx-type").value === "cheque";
@@ -1739,6 +2217,13 @@ function viewInvoice() {
     if (!person && e.personId) { $("#i-person").value = e.personId; buildDl(); }
   });
   buildDl();
+  try {
+    var _editId = sessionStorage.getItem("inv_edit_inv");
+    if (_editId !== null) {
+      sessionStorage.removeItem("inv_edit_inv");
+      if (db.invoices.some(function (x) { return x.id === _editId; })) startEditInvoice(_editId);
+    }
+  } catch (e) {}
   $("#i-save").onclick = function () {
     if (!draftItems.length) { toast("حداقل یک آیتم به فاکتور اضافه کنید."); return; }
     var sp = readSupPercent();
@@ -2186,6 +2671,14 @@ function viewSettings() {
         '<button class="btn ghost" id="s-import">بازیابی از فایل</button>' +
         '<input type="file" id="s-file" accept=".json" style="display:none">' +
       "</div>" +
+      '<hr style="margin:14px 0 12px;border:none;border-top:1px dashed var(--border)">' +
+      '<div class="row" style="align-items:center">' +
+        '<div><label>خروجی JSON آخرین بار</label><div class="hint" id="s-bk-date"></div></div>' +
+        '<div style="flex:1"></div>' +
+        '<div class="fit"><label style="display:flex;gap:8px;align-items:center;font-weight:600"><input type="checkbox" id="s-ab-on"> نسخه محلی خودکار (روزانه)</label></div>' +
+      "</div>" +
+      '<p class="hint" id="s-ab-info" style="margin-top:8px"></p>' +
+      '<div class="actions"><button class="btn ghost" id="s-ab-restore">♻️ بازیابی نسخه محلی خودکار</button></div>' +
     "</div>" +
     '<div class="card"><h2>حساب‌های بانکی من</h2>' +
       '<p class="hint">همه حساب‌ها در صفحه پرداخت مشتری (لینک فاکتور) با دکمه کپی نمایش داده می‌شوند. پرداخت‌های واریزی هم به یک حساب لینک می‌شوند.</p>' +
@@ -2231,71 +2724,12 @@ function viewSettings() {
     a.href = URL.createObjectURL(new Blob([JSON.stringify(db, null, 2)], { type: "application/json" }));
     a.download = "invoice-manager-backup.json";
     a.click();
+    try { localStorage.setItem("inv_lastfile_bk", today()); } catch (e) {}
+    var s = $("#s-bk-date");
+    if (s) s.textContent = faDate(today());
+    toast("فایل پشتیبان دانلود شد.");
   };
   $("#s-import").onclick = function () { $("#s-file").click(); };
-  /* convert a factor-manager (org website) backup into the invoice-manager shape */
-  function normIso(d, createdAt) {
-    var s = String(d || "").trim();
-    var m = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
-    if (m) {
-      var y = Number(m[1]), mo = Number(m[2]), da = Number(m[3]);
-      if (y < 1700) { var g = j2g(y, mo, da); y = g[0]; mo = g[1]; da = g[2]; }
-      return y + "-" + (mo < 10 ? "0" : "") + mo + "-" + (da < 10 ? "0" : "") + da;
-    }
-    var c = String(createdAt || "").slice(0, 10);
-    return /^\d{4}-\d{2}-\d{2}$/.test(c) ? c : "";
-  }
-  function convertFactorManagerBackup(old) {
-    var d = defaultData();
-    var st = old.settings || {};
-    /* profile + bank account from the old payment profile */
-    var profiles = st.paymentProfiles || [];
-    var prof = profiles.find(function (x) { return x.id === st.selectedPaymentProfileId; }) || profiles[0];
-    if (prof) {
-      d.profile = {
-        name: prof.name || "", bank: prof.profileBank || "",
-        sheba: String(prof.iban || "").replace(/^IR/, ""),
-        card: prof.card || "", phone: prof.phone || "",
-        payNote: db.profile.payNote || defaultData().profile.payNote,
-        socials: db.profile.socials || { instagram: "", telegram: "", whatsapp: "", site: "" }
-      };
-      if (d.profile.sheba || d.profile.card) {
-        d.accounts.push({ id: uid(), alias: prof.profileName || "حساب اصلی", bank: prof.profileBank || "",
-          sheba: d.profile.sheba, accNumber: "", card: d.profile.card });
-      }
-    }
-    if (st.supervisionPercent != null) d.supervisionPercent = Math.round(Number(st.supervisionPercent) * 100) || 0;
-    var count = 0;
-    function addItems(items, personId) {
-      (items || []).forEach(function (it) {
-        var noteParts = [];
-        (it.attachments || []).forEach(function (a) { if (a && a.filename) noteParts.push("📎 " + a.filename); });
-        d.entries.push({
-          id: it.id || uid(),
-          type: it.type === "received" ? "income" : "expense",
-          title: it.name || "", amount: Math.round(Number(it.amount) || 0),
-          date: normIso(it.date, it.createdAt),
-          personId: personId, tracking: it.trackingCode || "",
-          notes: noteParts.join("، ")
-        });
-        count++;
-      });
-    }
-    (old.employers || []).forEach(function (e) {
-      var notes = [];
-      if (e.supervisionPercent != null && e.supervisionPercent !== "")
-        notes.push("درصد نظارت: " + faPercent(Math.round(e.supervisionPercent * 100)) + "٪ (پایه: " +
-          (e.supervisionBase === "received" ? "دریافتی" : "خرج کرد") + ")");
-      d.people.push({ id: e.id || uid(), name: e.name || "", role: "employer", notes: notes.join("، ") });
-      addItems(e.items, e.id);
-    });
-    (old.employees || []).forEach(function (e) {
-      d.people.push({ id: e.id || uid(), name: e.name || "", role: "employee",
-        notes: e.position ? "شغل: " + e.position : "" });
-      addItems(e.items, e.id);
-    });
-    return { data: d, itemCount: count };
-  }
   $("#s-file").onchange = function (ev) {
     var f = ev.target.files[0];
     if (!f) return;
@@ -2303,21 +2737,28 @@ function viewSettings() {
     r.onload = function () {
       try {
         var d = JSON.parse(r.result);
-        if (typeof d !== "object" || d === null) throw 0;
-        if (Array.isArray(d.employers) && Array.isArray(d.employees) && !d.entries) {
-          if (!confirm("این یک پشتیبان قدیمی (factor-manager) است. داده‌های فعلی با داده‌های این فایل جایگزین می‌شوند. ادامه می‌دهید؟")) return;
-          var conv = convertFactorManagerBackup(d);
-          db = conv.data; save();
-          toast("وارد شد: " + conv.itemCount + " تراکنش و " + db.people.length + " شخص. تصاویر پیوست به‌صورت نام فایل در یادداشت‌ها ذخیره شدند.");
-          go("dashboard");
-          return;
-        }
-        var base = defaultData();
-        for (var k in base) if (d[k] === undefined) d[k] = base[k];
-        db = d; save(); toast("بازیابی انجام شد."); viewSettings();
-      } catch (e) { toast("فایل معتبر نیست."); }
+        restoreBackup(d, "فایل پشتیبان");
+      } catch (e) { toast("فایل JSON معتبری نیست."); }
     };
     r.readAsText(f);
+  };
+  /* پشتیبان محلی خودکار — بازیابی/تغییر وضعیت */
+  var snap = autoBackupSnapshot();
+  var bfDate = backupFileDateISO();
+  $("#s-bk-date").textContent = bfDate ? faDate(bfDate) : "هرگز";
+  $("#s-ab-on").checked = db.autoBackup !== false;
+  $("#s-ab-info").textContent = snap
+    ? "آخرین نسخه محلی: " + faDate(snap.d) + " (" + money(JSON.stringify(snap.data).length) + " بایت)"
+    : "هنوز نسخه محلی ساخته نشده است — با باز کردن برنامه ساخته می‌شود.";
+  $("#s-ab-on").onchange = function () {
+    db.autoBackup = $("#s-ab-on").checked;
+    save(); toast(db.autoBackup ? "نسخه محلی خودکار فعال شد." : "نسخه محلی خودکار خاموش شد.");
+    autoBackupTick();
+  };
+  $("#s-ab-restore").onclick = function () {
+    var s = autoBackupSnapshot();
+    if (!s || !s.data) { toast("نسخه محلی‌ای برای بازیابی نیست."); return; }
+    restoreBackup(s.data, "نسخه محلی " + faDate(s.d));
   };
   $("#so-save").onclick = function () {
     db.profile.socials = {
@@ -2369,6 +2810,19 @@ function viewSettings() {
 }
 
 /* ---------- boot ---------- */
+$("#gform").addEventListener("submit", function (ev) {
+  ev.preventDefault();
+  var v = $("#gsearch").value.trim();
+  if (v) go("search/" + encodeURIComponent(v));
+});
+window.addEventListener("keydown", function (ev) {
+  var tag = (ev.target.tagName || "").toLowerCase();
+  if ((ev.ctrlKey || ev.metaKey) && (ev.key === "k" || ev.key === "K")) {
+    ev.preventDefault(); $("#gsearch").focus(); $("#gsearch").select();
+  } else if (ev.key === "/" && !ev.ctrlKey && !ev.metaKey && tag !== "input" && tag !== "textarea" && tag !== "select") {
+    ev.preventDefault(); $("#gsearch").focus(); $("#gsearch").select();
+  }
+});
 $("#theme-btn").onclick = function () {
   var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
   applyTheme(next);
