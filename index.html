@@ -44,6 +44,9 @@ header{background:var(--card);border-bottom:1px solid var(--border);
 .searchbox{order:2;width:100%;flex-basis:100%}
 @media(min-width:760px){.searchbox{width:auto;flex-basis:220px}}
 #searchbox input{padding:7px 12px;font-size:13.5px;border-radius:9px;background:var(--bg)}
+#quick-add-btn{flex-shrink:0}
+#qa-overlay{position:fixed;inset:0;background:rgba(15,20,30,.45);z-index:70;overflow:auto;padding:24px}
+#qa-overlay .card{max-width:560px;margin:8vh auto 0;border-radius:16px}
 #theme-btn{border:1px solid var(--border);background:transparent;border-radius:9px;
   padding:6px 10px;color:var(--muted);font-size:15px}
 #theme-btn:hover{color:var(--accent);border-color:var(--accent)}
@@ -164,6 +167,7 @@ td.num,th.num{text-align:left;direction:ltr}
 <header>
   <div class="hbar">
     <div class="logo"><span class="ic">🧾</span><span id="app-title">مدیریت فاکتور</span></div>
+    <button id="quick-add-btn" class="btn sm" title="افزودن سریع آیتم (از هر صفحه)">＋ آیتم</button>
     <div class="searchbox">
       <form id="gform" role="search"><input id="gsearch" placeholder="جستجو (شخص، آیتم، فاکتور، چک…)" autocomplete="off"></form>
     </div>
@@ -174,6 +178,25 @@ td.num,th.num{text-align:left;direction:ltr}
 
 <div class="wrap" id="view"></div>
 <div class="toast" id="toast"></div>
+<div id="qa-overlay" style="display:none">
+  <div class="card" role="dialog" aria-modal="true" style="max-width:560px">
+    <h2>افزودن سریع آیتم</h2>
+    <div class="row">
+      <div><label>نوع</label><select id="qa-type"><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>
+      <div style="flex:2"><label>نام آیتم</label><input id="qa-title" placeholder="مثلاً حقوق آبان"></div>
+      <div><label>مبلغ (ریال)</label><input id="qa-amount" inputmode="numeric" placeholder="۰٬۰۰۰"></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <div><label>تاریخ</label><input id="qa-date" class="jdate" inputmode="numeric"></div>
+      <div style="flex:2"><label>شخص (اختیاری)</label><select id="qa-person"><option value="">—</option></select></div>
+      <div style="flex:3"><label>توضیحات</label><input id="qa-note" placeholder="اختیاری…"></div>
+    </div>
+    <div class="actions">
+      <button class="btn" id="qa-save">افزودن</button>
+      <button class="btn ghost" id="qa-cancel">انصراف</button>
+    </div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -346,6 +369,13 @@ function catName(id) {
   if (!id) return "";
   for (var i = 0; i < db.cats.length; i++) if (db.cats[i].id === id) return db.cats[i].name;
   return "";
+}
+/* معین پیش‌فرض بر اساس نقش شخص: کارفرما → بدهکاران، کارمند → دستمزد و حقوق */
+function autoCatId(role) {
+  var want = role === "employer" ? "بدهکاران" : "دستمزد";
+  for (var i = 0; i < db.cats.length; i++) if (db.cats[i].name.indexOf(want) === 0) return db.cats[i].id;
+  return seedCats().filter(function (s) { return s.name.indexOf(want) === 0; })
+    .map(function (s) { return s.id; })[0] || db.cats[0] && db.cats[0].id || "";
 }
 function tafsilName(id) {
   if (!id) return "";
@@ -566,7 +596,6 @@ function bindJalaliInputs() {
 var ROUTES = [
   ["dashboard", "داشبورد"],
   ["entries", "آیتم‌ها"],
-  ["ledger", "دفتر حساب‌ها"],
   ["people", "کارمندان و کارفرما"],
   ["transactions", "دریافت و پرداخت"],
   ["invoice", "فاکتور"],
@@ -593,11 +622,12 @@ function render() {
   if (r.indexOf("share/") === 0) { renderShare(decodeURIComponent(r.slice(6))); return; }
   if (r.indexOf("person/") === 0) { renderNav(""); viewPerson(r.slice(7)); window.scrollTo(0, 0); return; }
   if (r.indexOf("search/") === 0) { renderNav(""); viewSearch(decodeURIComponent(r.slice(7))); window.scrollTo(0, 0); return; }
-  var known = ["dashboard", "entries", "ledger", "people", "transactions", "invoice", "reports", "settings"];
+  if (r === "ledger") r = "reports"; // مسیر قدیمی دفتر حساب‌ها
+  var known = ["dashboard", "entries", "people", "transactions", "invoice", "reports", "settings"];
   if (known.indexOf(r) < 0) r = "dashboard";
   renderNav(r);
   if (r !== "invoice") editingInvoiceId = null;
-  ({ dashboard: viewDashboard, entries: viewEntries, ledger: viewLedger, people: viewPeople,
+  ({ dashboard: viewDashboard, entries: viewEntries, people: viewPeople,
      transactions: viewTransactions,
      invoice: viewInvoice, reports: viewReports, settings: viewSettings }[r])();
   autoBackupTick();
@@ -929,7 +959,11 @@ function viewEntries() {
     "</div>" +
     '<div class="card"><h2>همه اسناد و آیتم‌ها</h2>' +
       '<div class="row" style="margin-bottom:12px">' +
-        '<div><label>جستجو</label><input id="f-q" placeholder="نام آیتم، شخص یا کد پیگیری…"></div>' +
+        '<div style="flex:2"><label>جستجو</label><input id="f-q" placeholder="نام آیتم، شخص یا کد پیگیری…"></div>' +
+        '<div class="fit" style="align-self:flex-end"><button class="btn ghost sm" id="f-toggle">🔎 فیلترها</button></div>' +
+      "</div>" +
+      '<div id="f-adv" style="display:none">' +
+      '<div class="row" style="margin-bottom:12px">' +
         '<div><label>نوع</label><select id="f-type"><option value="">همه</option><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
         '<div><label>شخص</label><select id="f-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
         '<div><label>از تاریخ</label><input id="f-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۸/۰۱"></div>' +
@@ -940,6 +974,9 @@ function viewEntries() {
         '<button class="btn ghost sm" id="p-month">این ماه</button>' +
         '<button class="btn ghost sm" id="p-30d">۳۰ روز اخیر</button>' +
         '<button class="btn ghost sm" id="p-clear">پاک‌کردن بازه</button>' +
+      "</div>" +
+      "</div>" +
+      '<div class="row" style="margin-bottom:12px">' +
         '<span style="flex:1"></span>' +
         '<button class="btn ghost sm" id="csv-all">دانلود اکسل (CSV)</button>' +
       "</div>" +
@@ -950,6 +987,12 @@ function viewEntries() {
 
   bindAmountInput($("#e-amount"));
   bindEnter(".card", "#e-add");
+  $("#f-toggle").onclick = function () {
+    var open = $("#f-adv").style.display === "none";
+    $("#f-adv").style.display = open ? "" : "none";
+    $("#f-toggle").textContent = open ? "✖ بستن فیلترها" : "🔎 فیلترها";
+  };
+  $("#f-adv").style.display = ($("#f-type").value || $("#f-person").value || readIso("#f-from") || readIso("#f-to")) ? "" : "none";
   try {
     var _pref = sessionStorage.getItem("inv_prefill");
     if (_pref !== null) {
@@ -1120,116 +1163,6 @@ function viewEntries() {
 }
 
 /* ================= دفتر حساب‌ها (معین / تفصیلی) ================= */
-function viewLedger() {
-  $("#view").innerHTML =
-    '<div class="card"><h2>دفتر حساب‌ها — معین و تفصیلی</h2>' +
-      '<p class="hint">ساختار حسابداری: هر سند به یک حساب <b>معین</b> (زیرشاخهٔ دریافتی یا هزینه) و یک سرفصل <b>تفصیلی</b> (کارفرما، کارمند یا حساب آزاد مثل نام پروژه) الصاق می‌شود. معینِ اشخاص از همین صفحه یا هنگام ثبت شخص تعیین می‌شود و حساب سند به‌طور خودکار از آن پر می‌شود.</p>' +
-      '<div class="grid2">' +
-        '<div>' +
-          '<div class="row">' +
-            '<div><label>معین جدید</label><input id="c-name" placeholder="مثلاً دستمزد"></div>' +
-            '<div><label>سمت</label><select id="c-type"><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
-            '<div class="fit"><button class="btn ghost sm" id="c-add">افزودن معین</button></div>' +
-          "</div>" +
-          '<div id="cat-list" style="margin-top:10px"></div>' +
-        "</div>" +
-        '<div>' +
-          '<div class="row">' +
-            '<div style="flex:2"><label>تفصیلی جدید (حساب آزاد)</label><input id="t-name" placeholder="مثلاً پروژه آلاچیق"></div>' +
-            '<div><label>معین تفصیلی (اجباری)</label><select id="t-cat">' + catOptionsGrouped() + '</select><p class="hint">انتخاب معین برای تفصیلی اجباری است.</p></div>' +
-            '<div class="fit"><button class="btn ghost sm" id="t-add">افزودن تفصیلی</button></div>' +
-          "</div>" +
-          '<div id="tafsil-list" style="margin-top:10px"></div>' +
-        "</div>" +
-      "</div>" +
-    "</div>" +
-    '<div class="card"><h2>اشخاص به‌عنوان تفصیلی</h2>' +
-      '<div id="ppl-cat-list"></div>' +
-    "</div>";
-
-  function renderLedgers() {
-    $("#cat-list").innerHTML = db.cats.length ? '<div class="tblwrap"><table><tbody>' +
-      db.cats.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); }).map(function (c) {
-        var usedP = db.people.filter(function (p) { return p.catId === c.id; }).length;
-        var usedT = db.tafsils.filter(function (t) { return t.catId === c.id; }).length;
-        return "<tr><td><span class='mono hint'>معین-" + faPad(c.code) + "</span></td><td>" + esc(c.name) +
-          "</td><td>" + (c.type === "income" ? '<span class="badge b-green">دریافتی</span>' : '<span class="badge b-red">هزینه</span>') +
-          "</td><td class='hint'>" + money(usedP + usedT) + " حساب</td>" +
-          "<td><button class='btn icon sm' data-cdel='" + c.id + "'>حذف</button></td></tr>";
-      }).join("") + "</tbody></table></div>"
-      : '<div class="hint">هنوز معینی تعریف نشده است.</div>';
-    $("#tafsil-list").innerHTML = db.tafsils.length ? '<div class="tblwrap"><table><tbody>' +
-      db.tafsils.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); }).map(function (t) {
-        var cn = t.catId ? catName(t.catId) : "";
-        return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(t.code) + "</span></td><td>" + esc(t.name) +
-          "</td><td>" + (cn ? '<span class="badge b-blue">معین: ' + esc(cn) + "</span>" : '<span class="badge b-gray">بدون معین (قدیمی)</span>') +
-          "</td><td><button class='btn icon sm' data-tdel='" + t.id + "'>حذف</button></td></tr>";
-      }).join("") + "</tbody></table></div>"
-      : '<div class="hint">تفصیلی آزادی تعریف نشده است.</div>';
-    $("#ppl-cat-list").innerHTML = db.people.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>کد تفصیلی</th><th>نام</th><th>نقش</th><th>حساب معین</th><th>اسناد</th></tr></thead><tbody>" +
-      db.people.slice().sort(function (a, b) { return Number(a.tCode || 0) - Number(b.tCode || 0); }).map(function (p) {
-        var used = db.entries.filter(function (e) { return e.personId === p.id; }).length;
-        return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(p.tCode) + "</span></td>" +
-          "<td>" + esc(p.name) + "</td><td>" + personRoleBadge(p) +
-          "</td><td><select data-pcat='" + p.id + "' style='max-width:250px'>" + catOptionsGrouped(p.catId || "") + "</select></td>" +
-          "</td><td class='hint'>" + money(used) + "</td></tr>";
-      }).join("") + "</tbody></table></div>"
-      : '<div class="empty">کارمندی ثبت نشده است.</div>';
-    $("#ppl-cat-list").querySelectorAll("[data-pcat]").forEach(function (sel) {
-      sel.onchange = function () {
-        var p = db.people.find(function (x) { return x.id === sel.dataset.pcat; });
-        if (!p) return;
-        p.catId = sel.value || null;
-        save(); toast("معین «" + p.name + "» ذخیره شد.");
-      };
-    });
-    $("#cat-list").querySelectorAll("[data-cdel]").forEach(function (b) {
-      b.onclick = function () {
-        var c = db.cats.find(function (x) { return x.id === b.dataset.cdel; });
-        var usedP = db.people.filter(function (p) { return p.catId === c.id; }).length;
-        var usedT = db.tafsils.filter(function (t) { return t.catId === c.id; }).length;
-        if (!confirm("حذف معین «" + c.name + "»؟ اشخاص حذف نمی‌شوند و حساب‌شان خالی نمایش داده می‌شود." +
-          (usedP + usedT ? " (" + (usedP + usedT) + " حساب به آن وصل است)" : ""))) return;
-        db.cats = db.cats.filter(function (x) { return x.id !== c.id; });
-        save(); renderLedgers(); toast("معین حذف شد.");
-      };
-    });
-    $("#tafsil-list").querySelectorAll("[data-tdel]").forEach(function (b) {
-      b.onclick = function () {
-        var t = db.tafsils.find(function (x) { return x.id === b.dataset.tdel; });
-        if (!confirm("حذف تفصیلی «" + t.name + "»؟")) return;
-        db.tafsils = db.tafsils.filter(function (x) { return x.id !== t.id; });
-        save(); renderLedgers(); toast("تفصیلی حذف شد.");
-      };
-    });
-  }
-  $("#c-add").onclick = function () {
-    var name = $("#c-name").value.trim();
-    if (!name) { toast("نام معین را وارد کنید."); return; }
-    var type = $("#c-type").value;
-    if (db.cats.some(function (c) { return c.name === name && c.type === type; })) { toast("معینی با همین نام در این سمت وجود دارد."); return; }
-    db.cats.push({ id: uid(), code: nextCode(db.cats), name: name, type: type });
-    $("#c-name").value = "";
-    save(); renderLedgers();
-    $("#p-cat").innerHTML = catOptionsGrouped();
-    $("#t-cat").innerHTML = catOptionsGrouped();
-    toast("معین اضافه شد.");
-  };
-  $("#t-add").onclick = function () {
-    var name = $("#t-name").value.trim();
-    var catId = $("#t-cat").value;
-    if (!name) { toast("نام تفصیلی را وارد کنید."); return; }
-    if (!catId) { toast("معین تفصیلی را انتخاب کنید — تفصیلی بدون معین ثبت نمی‌شود."); return; }
-    if (db.tafsils.some(function (t) { return t.name === name; })) { toast("تفصیلی‌ای با همین نام وجود دارد."); return; }
-    db.tafsils.push({ id: uid(), code: nextCode(db.tafsils), name: name, catId: catId });
-    $("#t-name").value = "";
-    $("#t-cat").innerHTML = catOptionsGrouped();
-    save(); renderLedgers(); toast("تفصیلی اضافه شد.");
-  };
-  renderLedgers();
-}
-
 /* convert a factor-manager (org website) backup into the invoice-manager shape */
 function normIso(d, createdAt) {
   var s = String(d || "").trim();
@@ -1348,7 +1281,7 @@ function viewPeople() {
       '<div class="row">' +
         '<div><label>نام</label><input id="p-name" placeholder="نام و نام خانوادگی"></div>' +
         '<div><label>نقش</label><select id="p-role"><option value="employer">کارفرما</option><option value="employee">کارمند</option></select></div>' +
-        '<div><label>حساب معین (اجباری)</label><select id="p-cat">' + catOptionsGrouped() + '</select><p class="hint">مثلاً کارفرما زیر «بدهکاران»، کارمند زیر حساب هزینه.</p></div>' +
+        '<div><label>حساب معین (خودکار)</label><select id="p-cat"><option value="">خودکار (بر اساس نقش)</option>' + catOptionsGrouped() + '</select><p class="hint">اگر دست نزنید: کارفرما زیر «بدهکاران»، کارمند زیر حساب هزینهِ حقوق.</p></div>' +
       "</div>" +
         '<div><label>شماره تماس</label><input id="p-phone" inputmode="tel" placeholder="09…"></div>' +
         '<div><label>کد ملی (اختیاری)</label><input id="p-nid" inputmode="numeric"></div>' +
@@ -1405,15 +1338,19 @@ function viewPeople() {
   }
   function list() {
     $("#people-list").innerHTML = db.people.length ? '<div class="tblwrap"><table><thead><tr>' +
-      "<th>کد تفصیلی</th><th>نام</th><th>نقش</th><th>معین</th><th>شماره تماس</th><th>کد ملی</th><th></th></tr></thead><tbody>" +
+      "<th>کد تفصیلی</th><th>نام</th><th>نقش</th><th>مانده (آیتم‌ها)</th><th>آخرین سند</th><th></th></tr></thead><tbody>" +
       db.people.slice().sort(function (a, b) { return Number(a.tCode || 0) - Number(b.tCode || 0); }).map(function (p) {
-        var cn = p.catId ? catName(p.catId) : "";
-        return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(p.tCode) + "</span></td>" +
+        var inc = 0, exp = 0, last = "";
+        for (var i = 0; i < db.entries.length; i++) {
+          if (db.entries[i].personId !== p.id) continue;
+          if (db.entries[i].type === "income") inc += Number(db.entries[i].amount || 0); else exp += Number(db.entries[i].amount || 0);
+          if ((db.entries[i].date || "") > last) last = db.entries[i].date;
+        }
+        return "<tr data-row-acct='" + p.id + "' style='cursor:pointer'><td><span class='mono hint'>تفصیلی-" + faPad(p.tCode) + "</span></td>" +
           "<td><b>" + esc(p.name) + "</b>" + (p.notes ? '<br><span class="hint">' + esc(p.notes) + "</span>" : "") +
           "</td><td>" + personRoleBadge(p) +
-          "</td><td>" + (cn ? '<span class="badge b-blue">' + esc(cn) + "</span>" : '<span class="badge b-gray">بدون معین</span>') +
-          "</td><td class='mono'>" + esc(p.phone || "—") +
-          "</td><td class='mono'>" + esc(p.nationalId || "—") + "</td>" +
+          "</td><td class='num'>" + money(inc - exp) + "</td>" +
+          "<td class='hint'>" + (last ? faDate(last) : "—") + "</td>" +
           "<td><div style='display:flex;gap:6px;flex-wrap:wrap'>" +
           "<button class='btn ghost sm' data-acct='" + p.id + "'>صورتحساب</button>" +
           "<button class='btn ghost sm' data-detail='" + p.id + "'>جزئیات</button>" +
@@ -1423,6 +1360,12 @@ function viewPeople() {
 
     $("#people-list").querySelectorAll("[data-acct]").forEach(function (b) {
       b.onclick = function () { go("person/" + b.dataset.acct); };
+    });
+    $("#people-list").querySelectorAll("[data-row-acct]").forEach(function (r) {
+      r.onclick = function (ev) {
+        if ((ev.target.tagName || "").toLowerCase() === "button") return; // دکمه‌ها خودشان کار می‌کنند
+        go("person/" + r.dataset.rowAcct);
+      };
     });
     $("#people-list").querySelectorAll("[data-del]").forEach(function (b) {
       b.onclick = function () {
@@ -1468,9 +1411,8 @@ function viewPeople() {
   $("#p-cancel").onclick = resetForm;
   $("#p-add").onclick = function () {
     var name = $("#p-name").value.trim();
-    var catId = $("#p-cat").value;
+    var catId = $("#p-cat").value || autoCatId($("#p-role").value);
     if (!name) { toast("لطفاً نام وارد کنید."); return; }
-    if (!catId) { toast("معین شخص را انتخاب کنید — هر شخص به یک حساب معین وصل است."); return; }
     if (editingPerson) {
       editingPerson.name = name;
       editingPerson.role = $("#p-role").value;
@@ -1559,6 +1501,14 @@ function viewPerson(id) {
     d.invoices.forEach(function (v) { rows.push({ date: v.date, kind: "invoice", v: v }); });
     d.txs.forEach(function (t) { rows.push({ date: t.date, kind: "tx", t: t }); });
     rows.sort(function (a, b) { return (a.date || "") < (b.date || "") ? -1 : 1; });
+    /* مانده تجمعی: آیتم دریافتی و فاکتور و تراکنش دریافتی مثبت؛ هزینه/پرداختی منفی */
+    var run = 0;
+    rows.forEach(function (r) {
+      if (r.kind === "entry") run += (r.e.type === "income" ? 1 : -1) * Number(r.e.amount || 0);
+      else if (r.kind === "invoice") run += invoiceTotals(r.v).total;
+      else run += (r.t.direction === "outgoing" ? -1 : 1) * Number(r.t.amount || 0);
+      r.run = run;
+    });
 
     $("#st-body").innerHTML =
       '<div class="grid4" style="margin-bottom:16px">' +
@@ -1584,23 +1534,23 @@ function viewPerson(id) {
           return out > 0 ? '<p class="hint noprint" style="color:var(--amber)">⏳ <b>' + money(out) + '</b> رکورد دیگر این شخص خارج از بازهٔ فعلی است — برای دیدن همه، «همه زمان‌ها» را بزنید.</p>' : "";
         })() +
         (rows.length ? '<div class="tblwrap"><table><thead><tr>' +
-          "<th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ (ریال)</th><th>وضعیت</th>" +
+          "<th>تاریخ</th><th>نوع</th><th>شرح</th><th>مبلغ (ریال)</th><th>وضعیت</th><th>مانده تجمعی (ریال)</th>" +
           "</tr></thead><tbody>" + rows.map(function (r) {
             if (r.kind === "entry") {
               return "<tr><td>" + faDate(r.e.date) + "</td><td>" + typeBadge(r.e.type) +
-                "</td><td>" + esc(r.e.title) + (r.e.note ? ' <span class="hint">(' + esc(r.e.note) + ")</span>" : "") +
-                "</td><td class='num'>" + money(r.e.amount) + "</td><td></td></tr>";
+                "</td><td>" + esc(r.e.title) + ((r.e.notes || r.e.note) ? ' <span class="hint">(' + esc(r.e.notes || r.e.note) + ")</span>" : "") +
+                "</td><td class='num'>" + money(r.e.amount) + "</td><td></td><td class='num hint'>" + money(r.run) + "</td></tr>";
             }
             if (r.kind === "invoice") {
               var tt = invoiceTotals(r.v);
               return "<tr><td>" + faDate(r.v.date) + '</td><td><span class="badge b-amber">فاکتور</span></td>' +
                 "<td>" + (r.v.number ? "فاکتور-" + money(r.v.number) : "صورتحساب") + " <span class='hint'>(" + money(r.v.items.length) + " آیتم" + (tt.sup > 0 ? " + نظارت " + faPercent(r.v.supervisionPercent) + "٪" : "") + ")</span>" +
-                "</td><td class='num'>" + money(tt.total) + "</td><td>" + (r.v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') + "</td></tr>";
+                "</td><td class='num'>" + money(tt.total) + "</td><td>" + (r.v.paid ? '<span class="badge b-green">پرداخت شده</span>' : '<span class="badge b-amber">پرداخت نشده</span>') + "</td><td class='num hint'>" + money(r.run) + "</td></tr>";
             }
             var t = r.t;
             return "<tr><td>" + faDate(t.date) + "</td><td>" + dirBadge(t) + " " + typeBadgeTx(t) + "</td>" +
               "<td>" + (t.type === "cheque" ? "چک " + esc(t.number || "") + (t.bank ? " <span class='hint'>(" + esc(t.bank) + ")</span>" : "") : esc(TX_TYPES[t.type]) + (t.accountId ? " <span class='hint'>(" + esc(accountLabel(t.accountId)) + ")</span>" : "")) +
-              "</td><td class='num'>" + money(t.amount) + "</td><td>" + (t.type === "cheque" ? statusBadge(t) : "") + "</td></tr>";
+              "</td><td class='num'>" + money(t.amount) + "</td><td>" + (t.type === "cheque" ? statusBadge(t) : "") + "</td><td class='num hint'>" + money(r.run) + "</td></tr>";
           }).join("") + "</tbody></table></div>"
         : '<div class="empty">در این بازه گردشی برای این شخص ثبت نشده.</div>') +
       "</div>";
@@ -1816,6 +1766,12 @@ function viewTransactions() {
       "</div>" +
     "</div>" +
     '<div class="card"><h2>دریافت و پرداخت</h2>' +
+      '<div class="row" style="margin-bottom:12px">' +
+        '<div style="flex:2"><label>جستجو</label><input id="tf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
+        '<div class="fit" style="align-self:flex-end"><button class="btn ghost sm" id="tf-toggle">🔎 فیلترها</button></div>' +
+        '<div class="fit" style="align-self:flex-end"><button class="btn ghost sm" id="tf-csv">دانلود اکسل (CSV)</button></div>' +
+      "</div>" +
+      '<div id="tf-adv" style="display:none">' +
       '<div class="row" style="margin-bottom:10px">' +
         '<div><label>سررسید/ثبت از</label><input id="tf-from" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۰۱/۰۱"></div>' +
         '<div><label>تا</label><input id="tf-to" class="jdate" inputmode="numeric" placeholder="۱۴۰۵/۱۲/۲۹"></div>' +
@@ -1825,13 +1781,12 @@ function viewTransactions() {
         "</div>" +
       "</div>" +
       '<div class="row" style="margin-bottom:12px">' +
-        '<div><label>جستجو</label><input id="tf-q" placeholder="شماره، بانک، صیادی، توضیحات…"></div>' +
         '<div><label>نوع</label><select id="tf-type"><option value="">همه</option><option value="cheque">چک</option><option value="cash">نقدی</option><option value="transfer">واریز به حساب</option><option value="card">کارت به کارت</option></select></div>' +
         '<div><label>جهت</label><select id="tf-dir"><option value="">همه</option><option value="incoming">دریافتی</option><option value="outgoing">پرداختی</option></select></div>' +
         '<div><label>وضعیت چک</label><select id="tf-status"><option value="">همه</option><option value="open">در جریان</option><option value="cashed">واصل</option><option value="bounced">برگشتی</option></select></div>' +
         '<div><label>شخص</label><select id="tf-person"><option value="">همه</option>' + personOptions() + "</select></div>" +
         '<div><label>ترتیب</label><select id="tf-sort"><option value="due">نزدیک‌ترین تاریخ</option><option value="amount">بزرگ‌ترین مبلغ</option><option value="added">جدیدترین ثبت</option></select></div>' +
-        '<div class="fit"><button class="btn ghost sm" id="tf-csv">دانلود اکسل (CSV)</button></div>' +
+      "</div>" +
       "</div>" +
       '<div id="tx-detail"></div>' +
       '<div id="tx-list"></div>' +
@@ -1840,6 +1795,12 @@ function viewTransactions() {
   bindAmountInput($("#tx-amount"));
   bindEnter(".card", "#tx-add");
   setJalali("#tx-date", today());
+  $("#tf-toggle").onclick = function () {
+    var open = $("#tf-adv").style.display === "none";
+    $("#tf-adv").style.display = open ? "" : "none";
+    $("#tf-toggle").textContent = open ? "✖ بستن فیلترها" : "🔎 فیلترها";
+  };
+  $("#tf-adv").style.display = ($("#tf-type").value || $("#tf-dir").value || $("#tf-status").value || $("#tf-person").value || readIso("#tf-from") || readIso("#tf-to")) ? "" : "none";
   try {
     var _prefTx = sessionStorage.getItem("inv_prefill_tx");
     if (_prefTx !== null) {
@@ -2457,7 +2418,30 @@ function viewReports() {
         '<div class="fit"><button class="btn ghost sm" id="r-all">همه زمان‌ها</button></div>' +
       "</div>" +
     "</div>" +
-    '<div id="report-body"></div>';
+    '<div id="report-body"></div>' +
+    '<details class="card" style="margin-top:16px"><summary style="cursor:pointer;font-weight:800">⚙️ مدیریت حساب‌ها (معین / تفصیلی) — پیشرفته</summary>' +
+      '<p class="hint" style="margin-top:10px">ساختار حسابداری: هر سند به یک حساب <b>معین</b> (زیرشاخهٔ دریافتی یا هزینه) و یک سرفصل <b>تفصیلی</b> (کارفرما، کارمند یا حساب آزاد مثل نام پروژه) الصاق می‌شود. معینِ اشخاص خودکار از نقش‌شان تعیین می‌شود؛ این بخش برای تغییر دستی و حساب‌های آزاد است.</p>' +
+      '<div class="grid2">' +
+        '<div>' +
+          '<div class="row">' +
+            '<div><label>معین جدید</label><input id="c-name" placeholder="مثلاً دستمزد"></div>' +
+            '<div><label>سمت</label><select id="c-type"><option value="income">دریافتی</option><option value="expense">هزینه</option></select></div>' +
+            '<div class="fit"><button class="btn ghost sm" id="c-add">افزودن معین</button></div>' +
+          "</div>" +
+          '<div id="cat-list" style="margin-top:10px"></div>' +
+        "</div>" +
+        '<div>' +
+          '<div class="row">' +
+            '<div style="flex:2"><label>تفصیلی جدید (حساب آزاد)</label><input id="t-name" placeholder="مثلاً پروژه آلاچیق"></div>' +
+            '<div><label>معین تفصیلی</label><select id="t-cat">' + catOptionsGrouped() + '</select><p class="hint">انتخاب معین برای تفصیلی اجباری است.</p></div>' +
+            '<div class="fit"><button class="btn ghost sm" id="t-add">افزودن تفصیلی</button></div>' +
+          "</div>" +
+          '<div id="tafsil-list" style="margin-top:10px"></div>' +
+        "</div>" +
+      "</div>" +
+      '<h2 style="margin-top:14px">اشخاص به‌عنوان تفصیلی</h2>' +
+      '<div id="ppl-cat-list"></div>' +
+    "</details>";
 
   setJalali("#r-from", defFrom);
   setJalali("#r-to", today());
@@ -2512,7 +2496,7 @@ function viewReports() {
       byPerson[k][e.type === "income" ? "income" : "expense"] += Number(e.amount || 0);
       byPerson[k].n += 1;
     });
-    var persons = Object.keys(byPerson).map(function (k) { return byPerson[k]; })
+    var persons = Object.keys(byPerson).map(function (k) { var o = byPerson[k]; o.id = k; return o; })
       .sort(function (a, b) { return (b.income + b.expense) - (a.income + a.expense); });
     var maxPerson = persons.length ? Math.max.apply(null, persons.map(function (x) { return x.income + x.expense; })) : 1;
 
@@ -2565,12 +2549,12 @@ function viewReports() {
           }).join("") + "</tbody></table></div>"
         : '<div class="empty">در این بازه آیتمی ثبت نشده است.</div>') +
       "</div>" +
-      '<div class="card"><h2>تفکیک بر اساس شخص</h2>' +
+      '<div class="card"><h2>تفکیک بر اساس شخص <span class="hint">(کلیک روی هر ردیف → صورتحساب)</span></h2>' +
         (persons.length ? '<div class="tblwrap"><table><thead><tr>' +
           "<th>شخص</th><th>آیتم‌ها</th><th>دریافتی (ریال)</th><th>هزینه (ریال)</th><th style='width:30%'>سهم</th></tr></thead><tbody>" +
           persons.map(function (x) {
             var w = Math.round(100 * (x.income + x.expense) / maxPerson);
-            return "<tr><td>" + esc(x.name) + "</td><td>" + money(x.n) +
+            return "<tr data-rp='" + esc(x.id) + "' style='cursor:pointer'><td>" + esc(x.name) + "</td><td>" + money(x.n) +
               "</td><td class='num' style='color:var(--green)'>" + money(x.income) +
               "</td><td class='num' style='color:var(--red)'>" + money(x.expense) +
               "</td><td><div style='background:var(--accent-soft);border-radius:999px;height:10px;overflow:hidden'>" +
@@ -2633,6 +2617,10 @@ function viewReports() {
       a.click();
       toast("فایل CSV دانلود شد.");
     };
+
+    $("#report-body").querySelectorAll("[data-rp]").forEach(function (r) {
+      r.onclick = function () { if (r.dataset.rp !== "none") go("person/" + r.dataset.rp); };
+    });
   }
 
   ["#r-from", "#r-to", "#r-person"].forEach(function (s) {
@@ -2649,6 +2637,92 @@ function viewReports() {
   $("#r-all").onclick = function () {
     setJalali("#r-from", ""); setJalali("#r-to", ""); renderBody();
   };
+
+  /* ---------- مدیریت حساب‌ها (معین / تفصیلی) — بخش پیشرفته ---------- */
+  function renderLedgers() {
+    var cl = $("#cat-list");
+    if (!cl) return;
+    cl.innerHTML = db.cats.length ? '<div class="tblwrap"><table><tbody>' +
+      db.cats.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); }).map(function (c) {
+        var usedP = db.people.filter(function (p) { return p.catId === c.id; }).length;
+        var usedT = db.tafsils.filter(function (t) { return t.catId === c.id; }).length;
+        return "<tr><td><span class='mono hint'>معین-" + faPad(c.code) + "</span></td><td>" + esc(c.name) +
+          "</td><td>" + (c.type === "income" ? '<span class="badge b-green">دریافتی</span>' : '<span class="badge b-red">هزینه</span>') +
+          "</td><td class='hint'>" + money(usedP + usedT) + " حساب</td>" +
+          "<td><button class='btn icon sm' data-cdel='" + c.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>"
+      : '<div class="hint">هنوز معینی تعریف نشده است.</div>';
+    $("#tafsil-list").innerHTML = db.tafsils.length ? '<div class="tblwrap"><table><tbody>' +
+      db.tafsils.slice().sort(function (a, b) { return Number(a.code) - Number(b.code); }).map(function (t) {
+        var cn = t.catId ? catName(t.catId) : "";
+        return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(t.code) + "</span></td><td>" + esc(t.name) +
+          "</td><td>" + (cn ? '<span class="badge b-blue">معین: ' + esc(cn) + "</span>" : '<span class="badge b-gray">بدون معین (قدیمی)</span>') +
+          "</td><td><button class='btn icon sm' data-tdel='" + t.id + "'>حذف</button></td></tr>";
+      }).join("") + "</tbody></table></div>"
+      : '<div class="hint">تفصیلی آزادی تعریف نشده است.</div>';
+    $("#ppl-cat-list").innerHTML = db.people.length ? '<div class="tblwrap"><table><thead><tr>' +
+      "<th>کد تفصیلی</th><th>نام</th><th>نقش</th><th>حساب معین</th><th>اسناد</th></tr></thead><tbody>" +
+      db.people.slice().sort(function (a, b) { return Number(a.tCode || 0) - Number(b.tCode || 0); }).map(function (p) {
+        var used = db.entries.filter(function (e) { return e.personId === p.id; }).length;
+        return "<tr><td><span class='mono hint'>تفصیلی-" + faPad(p.tCode) + "</span></td>" +
+          "<td>" + esc(p.name) + "</td><td>" + personRoleBadge(p) +
+          "</td><td><select data-pcat='" + p.id + "' style='max-width:250px'>" + catOptionsGrouped(p.catId || "") + "</select></td>" +
+          "</td><td class='hint'>" + money(used) + "</td></tr>";
+      }).join("") + "</tbody></table></div>"
+      : '<div class="empty">کارمندی ثبت نشده است.</div>';
+    $("#ppl-cat-list").querySelectorAll("[data-pcat]").forEach(function (sel) {
+      sel.onchange = function () {
+        var p = db.people.find(function (x) { return x.id === sel.dataset.pcat; });
+        if (!p) return;
+        p.catId = sel.value || null;
+        save(); toast("معین «" + p.name + "» ذخیره شد.");
+      };
+    });
+    cl.querySelectorAll("[data-cdel]").forEach(function (b) {
+      b.onclick = function () {
+        var c = db.cats.find(function (x) { return x.id === b.dataset.cdel; });
+        var usedP = db.people.filter(function (p) { return p.catId === c.id; }).length;
+        var usedT = db.tafsils.filter(function (t) { return t.catId === c.id; }).length;
+        if (!confirm("حذف معین «" + c.name + "»؟ اشخاص حذف نمی‌شوند و حساب‌شان خالی نمایش داده می‌شود." +
+          (usedP + usedT ? " (" + (usedP + usedT) + " حساب به آن وصل است)" : ""))) return;
+        db.cats = db.cats.filter(function (x) { return x.id !== c.id; });
+        save(); renderLedgers(); toast("معین حذف شد.");
+      };
+    });
+    $("#tafsil-list").querySelectorAll("[data-tdel]").forEach(function (b) {
+      b.onclick = function () {
+        var t = db.tafsils.find(function (x) { return x.id === b.dataset.tdel; });
+        if (!confirm("حذف تفصیلی «" + t.name + "»؟")) return;
+        db.tafsils = db.tafsils.filter(function (x) { return x.id !== t.id; });
+        save(); renderLedgers(); toast("تفصیلی حذف شد.");
+      };
+    });
+  }
+  $("#c-add").onclick = function () {
+    var name = $("#c-name").value.trim();
+    if (!name) { toast("نام معین را وارد کنید."); return; }
+    var type = $("#c-type").value;
+    if (db.cats.some(function (c) { return c.name === name && c.type === type; })) { toast("معینی با همین نام در این سمت وجود دارد."); return; }
+    db.cats.push({ id: uid(), code: nextCode(db.cats), name: name, type: type });
+    $("#c-name").value = "";
+    save(); renderLedgers();
+    var pc = $("#p-cat"); if (pc) pc.innerHTML = catOptionsGrouped();
+    $("#t-cat").innerHTML = catOptionsGrouped();
+    toast("معین اضافه شد.");
+  };
+  $("#t-add").onclick = function () {
+    var name = $("#t-name").value.trim();
+    var catId = $("#t-cat").value;
+    if (!name) { toast("نام تفصیلی را وارد کنید."); return; }
+    if (!catId) { toast("معین تفصیلی را انتخاب کنید — تفصیلی بدون معین ثبت نمی‌شود."); return; }
+    if (db.tafsils.some(function (t) { return t.name === name; })) { toast("تفصیلی‌ای با همین نام وجود دارد."); return; }
+    db.tafsils.push({ id: uid(), code: nextCode(db.tafsils), name: name, catId: catId });
+    $("#t-name").value = "";
+    $("#t-cat").innerHTML = catOptionsGrouped();
+    save(); renderLedgers(); toast("تفصیلی اضافه شد.");
+  };
+  renderLedgers();
+
   renderBody();
   bindJalaliInputs();
 }
@@ -2818,6 +2892,35 @@ function viewSettings() {
 }
 
 /* ---------- boot ---------- */
+$("#quick-add-btn").onclick = function () {
+  $("#qa-overlay").style.display = "";
+  $("#qa-person").innerHTML = '<option value="">—</option>' + personOptions();
+  setJalali("#qa-date", today());
+  $("#qa-title").value = ""; $("#qa-amount").value = ""; $("#qa-note").value = "";
+  bindAmountInput($("#qa-amount"));
+  bindJalaliInputs();
+  setTimeout(function () { $("#qa-title").focus(); }, 0);
+};
+function qaClose() { $("#qa-overlay").style.display = "none"; }
+$("#qa-cancel").onclick = qaClose;
+$("#qa-overlay").addEventListener("click", function (ev) { if (ev.target === this) qaClose(); });
+$("#qa-save").onclick = function () {
+  var title = $("#qa-title").value.trim();
+  var amount = readAmount($("#qa-amount"));
+  if (!title || !(amount > 0)) { toast("لطفاً نام و مبلغ معتبر وارد کنید."); return; }
+  db.entries.push({
+    id: uid(), type: $("#qa-type").value, title: title, amount: amount,
+    date: readIso("#qa-date") || today(), personId: $("#qa-person").value || null,
+    note: $("#qa-note").value.trim(), tracking: tracking()
+  });
+  save(); toast("آیتم ثبت شد."); qaClose();
+  var r = route();
+  if (r === "entries" || r === "dashboard" || r === "person" || r.indexOf("person/") === 0) render();
+  if (r === "entries") { $("#e-title").value = ""; $("#e-amount").value = ""; }
+};
+window.addEventListener("keydown", function (ev) {
+  if (ev.key === "Escape" && $("#qa-overlay").style.display !== "none") qaClose();
+});
 $("#gform").addEventListener("submit", function (ev) {
   ev.preventDefault();
   var v = $("#gsearch").value.trim();
