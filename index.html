@@ -1567,6 +1567,11 @@ function viewPerson(id) {
         '<div class="stat expense"><div class="t">مانده فاکتورهای پرداخت‌نشده</div><div class="v">' + money(invUnpaid) + '</div></div>' +
         '<div class="stat"><div class="t">چک در جریان (و/پ)</div><div class="v">' + money(chequeInOpen) + ' <span style="font-size:12px">—</span> ' + money(chequeOutOpen) + '</div></div>' +
       "</div>" +
+      '<div class="grid4" style="margin-bottom:16px">' +
+        '<div class="stat income"><div class="t">آیتم‌های دریافتی</div><div class="v">' + money(entryIncome) + ' <span style="font-size:12px">ریال</span></div></div>' +
+        '<div class="stat expense"><div class="t">آیتم‌های هزینه</div><div class="v">' + money(entryExpense) + ' <span style="font-size:12px">ریال</span></div></div>' +
+        '<div class="stat balance"><div class="t">مانده حساب (آیتم‌ها)</div><div class="v">' + money(entryIncome - entryExpense) + ' <span style="font-size:12px">ریال</span></div></div>' +
+      "</div>" +
       '<div class="card"><h2>گردش حساب</h2>' +
         '<p class="hint noprint">آیتم‌ها: ' + money(d.entries.length) + ' مورد (دریافتی ' + money(entryIncome) + " / هزینه " + money(entryExpense) +
         ") — فاکتورها: " + money(d.invoices.length) + ' فاکتور — تراکنش‌ها: ' + money(d.txs.length) + ' مورد</p>' +
